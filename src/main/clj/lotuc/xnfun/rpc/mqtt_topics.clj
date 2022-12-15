@@ -1,4 +1,4 @@
-(ns lotuc.remote.mqtt.topics
+(ns lotuc.xnfun.rpc.mqtt-topics
   (:require [clojure.string :as str]))
 
 (def ^:dynamic *topic-prefix* "")

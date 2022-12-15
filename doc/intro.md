@@ -1,3 +1,1 @@
-# Introduction to mqtt-nodes
-
-TODO: write [great documentation](http://jacobian.org/writing/what-to-write/)
+# Introduction to xnfun

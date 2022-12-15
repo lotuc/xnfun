@@ -1,4 +1,4 @@
-(ns lotuc.remote.utils)
+(ns lotuc.xnfun.utils)
 
 (defn max-arity
   "Returns the maximum arity of:
@@ -21,9 +21,7 @@
       :variadic
       (let [max-arity (->> methods
                            (filter (comp #{"invoke"} first))
-                           (sort-by second)
-                           last
-                           second)]
+                           (sort-by second) last second)]
         (if (and (var? f) (-> f meta :macro))
           (- max-arity 2) ;; substract implicit &form and &env arguments
           max-arity)))))

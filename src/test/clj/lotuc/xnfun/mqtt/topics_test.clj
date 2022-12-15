@@ -1,6 +1,7 @@
-(ns lotuc.remote.mqtt.topics-test
-  (:require [clojure.test :as t]
-            [lotuc.remote.mqtt.topics :as sut]))
+(ns lotuc.xnfun.mqtt.topics-test
+  (:require
+   [clojure.test :as t]
+   [lotuc.xnfun.rpc.mqtt-topics :as sut]))
 
 (t/deftest registry-topic
   (binding [sut/*topic-prefix* "/hello/world"]

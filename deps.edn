@@ -1,0 +1,24 @@
+{:paths ["src/main/clj" "src/main/resources"]
+ :deps  {org.clojure/clojure {:mvn/version "1.11.1"}
+         org.clojure/tools.logging {:mvn/version "1.2.4"}
+         com.taoensso/nippy {:mvn/version "3.2.0"}
+         jarohen/chime {:mvn/version "0.3.3"}
+         org.clojure/core.async {:mvn/version "1.6.673"}
+         org.eclipse.paho/org.eclipse.paho.client.mqttv3 {:mvn/version "1.2.5"}}
+
+ :aliases
+ {:build {:deps {io.github.clojure/tools.build {:git/sha "9c738da"
+                                                :git/tag "v0.8.5"
+                                                :git/url "https://github.com/clojure/tools.build.git"}}
+          :ns-default build}
+  :dev  {:extra-paths ["src/dev/clj" "src/dev/resources" "src/test/clj"]}
+  :nrepl {:extra-deps {nrepl/nrepl {:mvn/version "1.0.0"}}
+          :main-opts  ["-m" "nrepl.cmdline" "-i"]}
+  :cider {:extra-deps {nrepl/nrepl       {:mvn/version "1.0.0"}
+                       cider/cider-nrepl {:mvn/version "0.29.0"}
+                       refactor-nrepl/refactor-nrepl {:mvn/version "3.6.0"}}
+          :main-opts  ["-m" "nrepl.cmdline" "--middleware"
+                       "[refactor-nrepl.middleware/wrap-refactor,cider.nrepl/cider-middleware]"
+                       "-i"]}
+  :test {:extra-paths ["src/dev/clj" "src/dev/resources"
+                       "src/test/resources" "src/test/clj"]}}}

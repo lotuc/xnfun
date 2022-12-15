@@ -1,0 +1,13 @@
+{:min-bb-version "0.8.156"
+ :deps  {failjure/failjure {:mvn/version "2.2.0"}}
+ :tasks {:requires ([babashka.fs :as fs]
+                    [babashka.tasks :refer [shell]])
+
+         nrepl     {:doc  "starts the nREPL"
+                    :task (clojure {:dir "."} "-M:dev:nrepl")}
+
+         cider     {:doc  "starts the nREPL with cider middlewares"
+                    :task (clojure {:dir "."} "-M:dev:cider")}
+
+         jar       {:doc  "builds the jar"
+                    :task (clojure {:dir "."} "-T:build jar")}}}
