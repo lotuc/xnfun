@@ -1,6 +1,6 @@
 (ns lotuc.xnfun.rpc.sample-funcs
   (:require
-   [clojure.core.async :refer [<! <!! >!! chan close! go-loop put!]]
+   [clojure.core.async :refer [<! >!! go-loop put!]]
    [clojure.tools.logging :as log]))
 
 (defn f-delayed-add [[a b delay-ms]]
@@ -55,6 +55,8 @@
               (recur (rest nums) (+ v r)))))))))
 
 (defn f-calculator
+  "Got input from caller via `in-c` channel. Send result to caller via `out-c`
+  channel."
   [_ {:keys [in-c out-c]
       {:as req-meta
        :keys [caller-node-id callee-node-id req-id hb-interval-ms]} :req-meta}]
@@ -66,12 +68,15 @@
                                :+ + :- - :* * :/ / nil)
                         args (map calc (rest exp))]
                     (if (nil? op) nil (apply op args)))))]
+
+      ;; Keep heartbeat.
       (future
         (loop []
           (put! out-c {:type :xnfun/hb})
           (log/debugf "[%s] heartbeat" req-id)
           (when (= :timeout (deref p hb-interval-ms :timeout)) (recur))))
-      ;; channel
+
+      ;; Wait for message, do calculation, and return result.
       (go-loop []
         (when-let [{:keys [type] :as d} (<! in-c)]
           (log/debugf "[%s] calculator - handling: %s" req-id d)
@@ -82,7 +87,7 @@
 
             :calc
             (let [r (calc (:data d))]   ; calc
-              (println (format "caller node: %s\ncallee node: %s" caller-node-id callee-node-id))
+              (log/infof "caller node: %s\ncallee node: %s" caller-node-id callee-node-id)
               (put! out-c {:type :calc-res :data {:exp (:data d) :res r}})
               (recur))
 
