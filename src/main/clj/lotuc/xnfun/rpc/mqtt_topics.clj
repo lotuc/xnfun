@@ -13,9 +13,7 @@
       (str *topic-prefix* registry-topic-prefix "/#")
 
       :heartbeat
-      (do
-        (when-not node-id (thr "node-id not given"))
-        (str *topic-prefix* registry-topic-prefix "/hb/" node-id))
+      (str *topic-prefix* registry-topic-prefix "/hb/" (or node-id "#"))
 
       (thr "action not supported"))))
 

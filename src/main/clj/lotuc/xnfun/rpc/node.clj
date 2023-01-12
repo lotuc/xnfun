@@ -1,8 +1,7 @@
 (ns lotuc.xnfun.rpc.node
   (:require
    [chime.core :as chime]
-   [clojure.core.async :refer [<! <!! >!! chan close! dropping-buffer go-loop
-                               put!]]
+   [clojure.core.async :refer [<! >!! chan close! dropping-buffer go-loop]]
    [clojure.tools.logging :as log]
    [lotuc.xnfun.utils :refer [max-arity]])
   (:import
@@ -10,21 +9,29 @@
 
 (def ^:dynamic *now-ms* #(System/currentTimeMillis))
 
+(def ^:private merge-ignores-nil
+  (partial merge-with (fn [a b] (if (nil? b) a b))))
+
+(def ^:private default-hb-options
+  {:hb-interval-ms 300000
+   :hb-lost-ratio 2.5})
+
+(def ^:private default-mqtt-options
+  {:broker "tcp://127.0.0.1:1883"
+   :connect-options {:max-in-flight 1000 :automatic-reconnect true}})
+
 (defn make-node
-  "Create a node.
-
-  Returns
-  - `node-options.mqtt-spec`: MQTT configuration.
-  "
+  "Create a node."
   [& {:keys [node-id node-options]}]
-  (let [node-id (or node-id (str (random-uuid)))
-
-        node-options
-        (-> (or node-options {})
-            (update :hb-interval-ms #(or % 30000))
-            (update :hb-lost-ratio  #(or % 2.5)))]
+  (let [node-id (or node-id (str (random-uuid)))]
     {:node-id      node-id
-     :node-options node-options
+
+     :node-options
+     (-> (or node-options {})
+         (merge-ignores-nil default-hb-options)
+         (update :xnfun/link
+                 #(or % {:xnfun/module 'xnfun.mqtt
+                         :mqtt-config (update default-mqtt-options :client-id node-id)})))
 
      :node-state
      {:cleanup          (atom #{})
