@@ -1,32 +1,40 @@
 (ns lotuc.xnfun.rpc.nodev2
   "Node abstraction for xnfun.
 
-  A node contains:
-  - `:node-id`: The global identifier for given connection link.
-  - `:node-options`: The options specified for given node. Check [[make-node-options]]
-     for details.
-  - `:node-state`: The mutable state for this node. Check [[make-node-state]] for
-    details.
+  - You can start a link (ex. MQTT link) for connecting with other nodes.
+  - You can register (capability) functions to current node.
+  - You can submit function call to current node (call you registered functions).
+  - You can register a promise to current node and maybe fullfill it later.
+  - You can do call to other node through current node via your established
+    link
 
-  Actions
-  - [[make-node]]
-  - [[node-function-info]]
-  - [[start-node-link!]]
+  When caller call from one node to other node's function (callee), this will
+  - Submit a promise in current node waiting for result.
+  - Submit a future (representing the remote computation, the callee) in remote
+    node.
+  - Create a bi-directional communication channel between caller and callee.
 
+  **Node**
+  - [[make-node]]  [[node-info]] [[start-node-link!]]
   - [[on-heartbeat!]]  [[on-remove-dead-workers!]]
-
   - [[get-remote-nodes]]  [[select-remote-node]]
 
+  **Capabilities**
   - [[add-function!]] [[call-function!]]
 
-  - [[fullfill-wait-function-call]]
-  "
+  **Promises**
+  - [[fullfill-promise!]] [[submit-promise!]]
+
+  **Function**
+  - [[submit-call!]]
+
+  **Remote function**"
   (:require
    [clojure.core.async :refer [<! >!! chan close! dropping-buffer go-loop]]
    [clojure.tools.logging :as log]
    [lotuc.xnfun.utils :refer [max-arity *now-ms* *chime-at*]]
    [lotuc.xnfun.rpc.mqtt-link :refer [new-mqtt-link]]
-   [lotuc.xnfun.rpc.link]))
+   [lotuc.xnfun.rpc.link :refer [send-msg]]))
 
 (defn- make-req-meta [req-meta]
   (let [timeout-ms     (or (:timeout-ms req-meta) 60000)
@@ -92,14 +100,21 @@
             :promises  (atom {})}})
 
 (defn make-node
-  "Create a node."
+  "Create a node.
+
+  A node contains:
+  - `:node-id`: The global identifier for given connection link.
+  - `:node-options`: The options specified for given node. Check [[make-node-options]]
+     for details.
+  - `:node-state`: The mutable state for this node. Check [[make-node-state]] for
+    details."
   [& {:keys [node-id node-options]}]
   (let [node-id (or node-id (str (random-uuid)))]
     {:node-id      node-id
      :node-options (make-node-options node-id node-options)
      :node-state   (make-node-state)}))
 
-(defn node-function-info
+(defn node-info
   "Retrieve node's supported functions as:
   `function-name -> {:keys [arity]}`"
   [{:as node :keys [node-state]}]
@@ -222,7 +237,7 @@
                                :req-meta req-meta}])
       (apply function [params]))))
 
-(defn fullfill-function-call-promise
+(defn fullfill-promise!
   "Handling data from callee.
 
   Arguments:
@@ -243,7 +258,7 @@
         (when timeout-timer (.close timeout-timer)))
       (log/debugf "[%s] request not found [%s]: %s" node-id req-id r))))
 
-(defn submit-function-call-promise
+(defn submit-promise!
   [{:as node :keys [node-id]}
    {:as request :keys [req-id req-meta]}]
   (let [promises (-> node :node-state :remote :promises)
@@ -256,12 +271,12 @@
         on-timeout
         (fn [_]
           (->> {:status :xnfun/err :data {:typ :timeout :reason "timeout"}}
-               (fullfill-function-call-promise node req-id)))
+               (fullfill-promise! node req-id)))
 
         on-hb-lost
         (fn [_]
           (->> {:status :xnfun/err :data {:typ :timeout :reason "hb-lost"}}
-               (fullfill-function-call-promise node req-id)))
+               (fullfill-promise! node req-id)))
 
         do-hb
         (let [hb-lost-at (+ (*now-ms*) (* hb-lost-ratio hb-interval-ms))]
@@ -426,7 +441,7 @@
       hb-interval-ms (assoc :hb hb)
       hb-interval-ms (merge (do-hb)))))
 
-(defn submit-function-call!
+(defn submit-call!
   "Submit function to async run.
 
   Arguments
@@ -469,3 +484,25 @@
             (update m req-id))))
         (get req-id)
         deref)))
+
+(defn submit-remote-call!
+  [{:as node :keys [node-id]}
+   fun-name params
+   & {:as options :keys [req-meta out-c match-node-fn]}]
+  (let [callee-node-id
+        (select-remote-node node {:match-fn match-node-fn})
+
+        link    @(-> node :node-state :local :link)
+        p       (submit-promise! node {:req-meta req-meta})
+        req-meta (-> p :request :req-meta)
+        req-id   (:req-id p)
+
+        sub-msg (with-meta
+                  {}
+                  {})
+
+        req-msg (with-meta
+                  {:typ :req :data [[fun-name params] req-meta]}
+                  {:callee-node-id callee-node-id})]
+    (sub-msg node {:types [:resp]})
+    (send-msg node {:typ :req :data {}})))
