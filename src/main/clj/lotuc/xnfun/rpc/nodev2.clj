@@ -17,6 +17,7 @@
   **Node**
   - [[make-node]]  [[node-info]] [[start-node-link!]]
   - [[on-heartbeat!]]  [[on-remove-dead-workers!]]
+  - [[start-heartbeat!]]
   - [[get-remote-nodes]]  [[select-remote-node]]
 
   **Capabilities**
@@ -28,19 +29,22 @@
   **Function**
   - [[submit-call!]]
 
-  **Remote function**"
+  **Remote function**
+  - [[submit-remote-call!]] [[serve-remote-call!]]"
   (:require
-   [clojure.core.async :refer [<! >!! chan close! dropping-buffer go-loop]]
+   [clojure.core.async :refer [<! <!! >!! chan close! dropping-buffer go-loop]]
    [clojure.tools.logging :as log]
-   [lotuc.xnfun.utils :refer [max-arity *now-ms* *chime-at*]]
+   [lotuc.xnfun.utils :refer [max-arity *now-ms* *run-at* *periodic-run*]]
    [lotuc.xnfun.rpc.mqtt-link :refer [new-mqtt-link]]
-   [lotuc.xnfun.rpc.link :refer [send-msg]]))
+   [lotuc.xnfun.rpc.link :as l]))
 
 (defn- make-req-meta [req-meta]
-  (let [timeout-ms     (or (:timeout-ms req-meta) 60000)
+  (let [req-id         (or (:req-id req-meta) (str (random-uuid)))
+        timeout-ms     (or (:timeout-ms req-meta) 60000)
         hb-interval-ms (:hb-interval-ms req-meta)
         hb-lost-ratio  (if hb-interval-ms (or (:hb-lost-ratio req-meta) 2.5) nil)]
     (cond-> (or req-meta {})
+      req-id         (assoc :req-id req-id)
       timeout-ms     (assoc :timeout-ms timeout-ms)
       hb-interval-ms (assoc :hb-interval-ms hb-interval-ms)
       hb-lost-ratio  (assoc :hb-lost-ratio hb-lost-ratio))))
@@ -93,7 +97,8 @@
       choose agent for it's message's async handling.
     - `:promises`: Promises waiting for remote responses."
   []
-  {:local  {:functions (atom {})
+  {:local  {:hb        (atom {})
+            :functions (atom {})
             :futures   (atom {})
             :link      (atom nil)}
    :remote {:nodes     (agent {})
@@ -124,14 +129,49 @@
 
 (defn start-node-link!
   "Start node link."
-  [{:as node {:keys [link]} :node-state}]
-  (let [link-module (-> node :node-options :link :xnfun/module)]
+  [{:as node :keys [node-id] {:keys [link]} :node-state}]
+  (let [link-options (-> node :node-options :link)
+        link-module  (:xnfun/module link-options)]
     (if (= link-module 'xnfun.mqtt)
-      (let [link (-> node :node-state :local :link)]
-        @(swap! link (fn [_] (delay (new-mqtt-link node)))))
+      (let [link (-> node :node-state :local :link)
+            [old new]
+            (swap-vals! link (fn [_] (delay (new-mqtt-link node-id link-options))))]
+        (if (or (nil? old) (realized? old))
+          (try (when (and (not (nil? old)) (not (l/closed? @old)))
+                 (l/close! @old))
+               @new
+               (catch Exception _ (reset! link old)))
+          (do (reset! link old)
+              (->> {:node node} (ex-info "someone else is starting") throw))))
       (->> {:link (-> node :node-options :link)}
            (ex-info "unkown link")
            throw))))
+
+(defn start-heartbeat!
+  [{:as node :keys [node-id]}]
+  (let [hb (-> node :node-state :local :hb)
+
+        {:keys [hb-interval-ms]}
+        (get-in node [:node-options :hb-options])
+
+        link @(-> node :node-state :local :link)
+
+        v
+        (swap!
+         hb
+         (fn [v]
+           (when v (try (.close @v) (catch Exception _)))
+           (delay (*periodic-run*
+                   (*now-ms*)
+                   hb-interval-ms
+                   (fn [_]
+                     (println "run...")
+                     (->> (with-meta
+                            {:typ :hb :data (node-info node)}
+                            {:node-id node-id})
+                          (l/send-msg link)))))))]
+    (println "!!!!" v)
+    @v))
 
 (defn- on-heartbeat*!
   [remote-nodes {:keys [node-id hb-options functions]}]
@@ -214,12 +254,15 @@
 (defn call-function!
   "Call registered function with name.
 
+  All data should be format of {:keys [typ data]}
+
   Arguments:
   - `out-c` (optional): function can send message to caller via the channel
-    - {:type :xnfun/hb}: long-running function heartbeat
-    - {:type :msg :keys [data}: message, also triggers heartbeat
+    - `:typ=:xnfun/hb`: Long-running function heartbeat
+    - `:typ=:xnfun/to-caller`: Message to caller
   - `in-c` (optional): caller send some signal to callee
-    - {:type :xnfun/cancel}: softlly tells the function we'll cancel."
+    - `:typ=:xnfun/cancel`: Cancellation message.
+    - `:typ=:xnfun/to-callee`: Message to callee."
   [node fun-name params
    & {:keys [out-c in-c req-meta]}]
   (let [{:keys [function arity]}
@@ -241,9 +284,15 @@
   "Handling data from callee.
 
   Arguments:
-  - `:status`: `:ok` or `:xnfun/err` or `err`
-  - `:meta`: the call metadata
-  - `:data`
+  - `:status`: `:ok` or `:xnfun/err` or `:xnfun/remote-err` or `:err`
+    - When error is assured triggered by the user's function code, no matter it
+      runs locally or remotely, the status should be `:err`
+    - When error is not assured triggered by user's function code:
+      - `:xnfun/err`: Error occurs locally
+      - `:xnfun/remote-err`: Error occurs remotely
+  - `:meta`: the call metadata.
+  - `:data`: If `status=:ok`, means the fullfilled data; else the data
+    describing the error.
   "
   [{:as node :keys [node-id]} req-id {:as r :keys [status data]}]
   (let [[old _]
@@ -259,10 +308,18 @@
       (log/debugf "[%s] request not found [%s]: %s" node-id req-id r))))
 
 (defn submit-promise!
+  "Submit promise to node.
+
+  The submitted promise may be fullfilled on timeout. Or can be fullfilled
+  manually with: [[fullfill-promise!]]
+
+  Returns: {:keys [res-promise request timeout-timer hb-lost-timer]}
+  - `request`: {:keys [`req-meta`]}"
   [{:as node :keys [node-id]}
-   {:as request :keys [req-id req-meta]}]
+   {:as request :keys [req-meta]}]
   (let [promises (-> node :node-state :remote :promises)
         req-meta (make-req-meta req-meta)
+        req-id   (:req-id req-meta)
         request  (assoc request :req-meta req-meta)
 
         {:keys [timeout-ms hb-lost-ratio hb-interval-ms]}
@@ -279,9 +336,10 @@
                (fullfill-promise! node req-id)))
 
         do-hb
-        (let [hb-lost-at (+ (*now-ms*) (* hb-lost-ratio hb-interval-ms))]
-          {:hb-lost-at hb-lost-at
-           :hb-lost-timer (*chime-at* [hb-lost-at] on-hb-lost)})
+        (fn []
+          (let [hb-lost-at (+ (*now-ms*) (* hb-lost-ratio hb-interval-ms))]
+            {:hb-lost-at hb-lost-at
+             :hb-lost-timer (*run-at* hb-lost-at on-hb-lost)}))
 
         hb
         (fn []
@@ -308,8 +366,8 @@
                  (->> (delay
                         (cond-> {:res-promise   (promise)
                                  :request       request
-                                 :timeout-timer (*chime-at*
-                                                 [(+ (*now-ms*) timeout-ms)]
+                                 :timeout-timer (*run-at*
+                                                 (+ (*now-ms*) timeout-ms)
                                                  on-timeout)}
                           hb-interval-ms (assoc :hb hb)
                           hb-interval-ms (merge (do-hb))))
@@ -384,7 +442,7 @@
         (fn []
           (let [hb-lost-at (+ (*now-ms*) (* hb-lost-ratio hb-interval-ms))]
             {:hb-lost-at hb-lost-at
-             :hb-lost-timer (*chime-at* [hb-lost-at] on-hb-lost)}))
+             :hb-lost-timer (*run-at* hb-lost-at on-hb-lost)}))
 
         hb
         (fn []
@@ -435,43 +493,38 @@
              :running-future f
              :in-c           in-c
              :out-c          out-c
-             :timeout-timer (*chime-at*
-                             [(+ (*now-ms*) timeout-ms)]
+             :timeout-timer (*run-at*
+                             (+ (*now-ms*) timeout-ms)
                              on-timeout)}
       hb-interval-ms (assoc :hb hb)
       hb-interval-ms (merge (do-hb)))))
 
+(defn- get-call [node req-id]
+  (let [f (-> @(-> node :node-state :local :futures)
+              (get req-id))]
+    (if f @f nil)))
+
 (defn submit-call!
-  "Submit function to async run.
+  "Submit function to node and run it asynchronously.
 
   Arguments
-  - `options.out-c`: callee will send message (and heartbeat) throught this
+  - `out-c`: callee will send message (and heartbeat) throught this
      channel.
      - If not given, will create a dropping buffer channel
      - Notice that the out-c would block callee, so you should handle the message
        as soon as possible.
-  - `options.timeout-ms`: Defaults to be `60_000`. Max timeout for function call
-  - `options.hb-interval-ms`: Suggested hb interval for function if given
-  - `options.hb-lost-ratio`: Defaults to be `2.5`
-    If hb-interval-ms given, function call will be timeouted when no heartbeat
-    recv for every (* `hb-interval-ms` `hb-lost-ratio`)
+  - `req-meta`: Check [[make-req-meta]] for details.
 
-  Returns {:keys [running-future in-c out-c]}
-  - `in-c`: send message to function call, {:keys [type, data]}
-    - `type`
-      - `cancel`: the function can do some gracefully shutdown operations.
-        Notice the return value of function will not be available for caller
-        after the function recvs cancel, because the caller already abandons.
-  - `out-c`: message from the callee, {:keys [type, data]}
-    - `type`
-      - `hb`: heartbeat message
-      - `msg`: message to caller
+  Returns {:keys [req-id submit-at request running-future in-c out-c
+                  timeout-timer hb-lost-timer]}
+
+  Check [[call-function!]] for `in-c` and `out-c`.
   "
   [{:as node :keys [node-id]}
    fun-name params
    & {:as options :keys [req-meta out-c]}]
-  (let [req-id   (or (:req-id req-meta) (str (random-uuid)))
-        req-meta (assoc (make-req-meta req-meta) :req-id req-id)
+  (let [req-meta (make-req-meta req-meta)
+        req-id   (:req-id req-meta)
         options  (-> options
                      (assoc :req-meta req-meta)
                      (assoc :in-c (chan 1))
@@ -485,24 +538,153 @@
         (get req-id)
         deref)))
 
+(defn- check-link [node]
+  (let [link @(-> node :node-state :local :link)]
+    (when (not link)
+      (->> {:node node}
+           (ex-info "link is not created")
+           throw))
+
+    (when (l/closed? link)
+      (->> {:node node}
+           (ex-info "link is closed")
+           throw))
+
+    link))
+
+;; RPC related data
+;; :req
+;;   :typ :xnfun/call | :xnfun/to-callee | :xnfun/cancel
+;; :resp
+;;   :typ :xnfun/to-caller | :xnfun/hb | :xnfun/resp
+
+(defn- submit-remote-call-to-node!
+  [{:as node :keys [node-id]}
+   fun-name params callee-node-id
+   & {:as options :keys [req-meta out-c]}]
+
+  (let [link    (check-link node)
+        in-c  (chan 1)
+        out-c (or out-c (chan (dropping-buffer 1)))
+
+        p        (submit-promise! node {:req-meta req-meta})
+        hb       (:hb p)
+        req-meta (-> p :request :req-meta)
+        req-id   (:req-id req-meta)
+
+        m {:callee-node-id callee-node-id :req-id req-id}]
+
+    (go-loop []
+      (let [d (<! in-c)]
+        (when-let [{:keys [typ]} d]
+          (try
+            (if
+             (or (= typ :xnfun/to-callee)
+                 (= typ :xnfun/cancel))
+              (->> (with-meta {:type :req :data d} m)
+                   (l/send-msg link))
+              (log/warnf "unkown message from caller: %s" d))
+            (catch Exception e
+              (log/warnf e "[%s] error handle caller msg: %s" req-id d)))
+          (recur))))
+
+    (->>
+     (with-meta
+       {:types [:resp]
+        :handle-fn
+        (fn [{:as msg :keys [typ data]}]
+          ;; Message from remote
+          (case typ
+            :xnfun/resp
+            (let [{:keys [status data]} data]
+              (->>
+               (cond
+                 (= status :ok)        {:status :ok :data data}
+                 (= status :err)       {:status :err :data data}
+                 (= status :xnfun/err) {:status :xnfun/remote-err :data data}
+
+                 :else {:status :xnfun/remote-err
+                        :data {:typ :xnfun/err-invalid-resp :data data}})
+               (fullfill-promise! node req-id)))
+
+            :xnfun/to-caller
+            (do (when hb (hb)) (>!! out-c data))
+
+            :xnfun/hb
+            (when hb (hb))))}
+       m)
+     (l/sub-msg link))
+
+    (->>
+     (with-meta {:typ :req
+                 :data {:typ :xnfun/call
+                        :data [[fun-name params] req-meta]}}
+       m)
+     (l/send-msg link))
+
+    p))
+
 (defn submit-remote-call!
   [{:as node :keys [node-id]}
    fun-name params
    & {:as options :keys [req-meta out-c match-node-fn]}]
   (let [callee-node-id
-        (select-remote-node node {:match-fn match-node-fn})
+        (select-remote-node node {:match-fn match-node-fn})]
+    (submit-remote-call-to-node! node fun-name params callee-node-id options)))
 
-        link    @(-> node :node-state :local :link)
-        p       (submit-promise! node {:req-meta req-meta})
-        req-meta (-> p :request :req-meta)
-        req-id   (:req-id p)
+(defn serve-remote-call!
+  [{:as node :keys [node-id]}]
+  (let [link (check-link node)
 
-        sub-msg (with-meta
-                  {}
-                  {})
+        handle-msg
+        (fn [msg {:as m :keys [req-id caller-node-id]}]
+          (if-let [{:keys [in-c]} (get-call node req-id)]
+            (>!! in-c msg)
+            (log/warnf "request [%s] not found from [%s]" req-id caller-node-id)))
 
-        req-msg (with-meta
-                  {:typ :req :data [[fun-name params] req-meta]}
-                  {:callee-node-id callee-node-id})]
-    (sub-msg node {:types [:resp]})
-    (send-msg node {:typ :req :data {}})))
+        handle-call
+        (fn [[[fun-name params] req-meta m]]
+          (let [out-c (chan 1)
+                options {:out-c out-c :req-meta req-meta}
+
+                {:keys [out-c running-future]}
+                (submit-call! node fun-name params options)]
+
+            (go-loop [d (<!! out-c)]
+              (when d
+                (->> (with-meta {:typ :resp :data d} m)
+                     (l/send-msg link))
+                (recur (<!! out-c))))
+
+            (future
+              (->>
+               (with-meta
+                 (try
+                   (let [r @running-future]
+                     {:typ :resp
+                      :data {:typ :xnfun/resp
+                             :data {:status :ok :data r}}})
+                   (catch Exception e
+                     {:typ :resp
+                      :data
+                      {:typ :xnfun/resp
+                       :data {:status :err
+                              :data {:exception-class (str (class e))}}}}))
+                 m)
+               (l/send-msg link)))))]
+    (->>
+     (with-meta
+       {:types [:req]
+        :handle-fn
+        (fn [{:as msg :keys [typ data]}]
+          (let [{:as m :keys [req-id caller-node-id]} (meta msg)]
+            (if (= typ :xnfun/call)
+              (handle-call data)
+              (handle-msg msg m))
+            (case typ
+              :xnfun/call
+              :xnfun/to-callee (handle-to-callee)
+              :xnfun/cancel (handle-cancel)
+              (log/warnf "unkown message from caller: %s %s"
+                         caller-node-id req-id))))})
+     (l/sub-msg link))))

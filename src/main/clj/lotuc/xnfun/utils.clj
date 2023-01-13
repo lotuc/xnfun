@@ -1,6 +1,6 @@
 (ns lotuc.xnfun.utils
   (:require [chime.core :as chime])
-  (:import (java.time Instant)))
+  (:import (java.time Instant Duration)))
 
 (defn max-arity
   "Returns the maximum arity of:
@@ -31,10 +31,17 @@
 ;; The current time in ms
 (def ^:dynamic *now-ms* #(System/currentTimeMillis))
 
-(def ^:dynamic *chime-at*
+(def ^:dynamic *run-at*
   "Return a closable."
-  (fn [times-in-ms fun & handlers]
+  (fn [time-in-ms fun & handlers]
     (chime/chime-at
-     (map #(Instant/ofEpochMilli %) times-in-ms)
+     [(Instant/ofEpochMilli time-in-ms)]
      fun
      handlers)))
+
+(def ^:dynamic *periodic-run*
+  "Periodically run. Return a closable."
+  (fn [first-run-at-in-ms interval-ms fun & handlers]
+    (-> (chime/periodic-seq (Instant/ofEpochMilli first-run-at-in-ms)
+                            (Duration/ofMillis interval-ms))
+        (chime/chime-at fun handlers))))

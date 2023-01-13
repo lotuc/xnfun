@@ -196,6 +196,8 @@
           (catch Exception e
             (do-unsub)
             (throw e)))))
+    (closed? [_]
+      @closed)
     (close! [_]
       (try (mqtt/disconnect client)
            (finally (reset! closed true))))))
@@ -208,7 +210,7 @@
          ;; topic to handler functions
          :subscriptions (atom {})
          ;; if the link is closed
-         :closed (atom {})}
+         :closed (atom false)}
 
         options
         (-> state
