@@ -24,7 +24,7 @@
 
     Additional info is encoded with metadata of `msg`.")
 
-  (sub-msg
+  (add-subscription
     [_ {:as subscription :keys [types handle-fn]}]
     "Subscribe for message and handle it with `handle-fn`.
 
@@ -46,6 +46,10 @@
     Additional info is encoded within metadata of `msg`.
 
     Return: unsubscribe the subscription.")
+
+  (remove-subscription
+    [_ {:as subscription :keys [types handle-fn]}]
+    "Remove the `subscription` added by [[add-subscription]]")
 
   (closed?
     [_]

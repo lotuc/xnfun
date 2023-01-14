@@ -36,7 +36,7 @@
   (fn [time-in-ms fun & handlers]
     (chime/chime-at
      [(Instant/ofEpochMilli time-in-ms)]
-     fun
+     (fn [t] (fun (.toEpochMilli t)))
      handlers)))
 
 (def ^:dynamic *periodic-run*
@@ -44,4 +44,4 @@
   (fn [first-run-at-in-ms interval-ms fun & handlers]
     (-> (chime/periodic-seq (Instant/ofEpochMilli first-run-at-in-ms)
                             (Duration/ofMillis interval-ms))
-        (chime/chime-at fun handlers))))
+        (chime/chime-at (fn [t] (fun (.toEpochMilli t))) handlers))))
