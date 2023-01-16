@@ -15,10 +15,15 @@
   - Create a bi-directional communication channel between caller and callee.
 
   **Node**
-  - [[make-node]]  [[node-info]] [[start-node-link!]]
-  - [[on-heartbeat!]]  [[on-remove-dead-workers!]]
-  - [[start-heartbeat!]]
-  - [[get-remote-nodes]]  [[select-remote-node]]
+  - [[make-node]]
+  - [[node-info]]
+  - [[node-link]] [[node-futures]] [[node-promises]] [[node-remote-nodes]]
+  - [[select-remote-node]]
+
+  - [[start-node-link!]] [[stop-node-link!]]
+  - [[on-heartbeat!]]  [[remove-dead-workers!]]
+  - [[start-heartbeat!]] [[stop-heartbeat!]]
+  - [[start-heartbeat-listener!]] [[stop-heartbeat-listener!]]
 
   **Capabilities**
   - [[add-function!]] [[call-function!]]
@@ -34,16 +39,19 @@
   (:require
    [clojure.core.async :refer [<! <!! >!! chan close! dropping-buffer go-loop]]
    [clojure.tools.logging :as log]
-   [lotuc.xnfun.utils :refer [max-arity *now-ms* *run-at* *periodic-run*]]
+   [lotuc.xnfun.utils :refer [max-arity
+                              swap!-swap-in-delayed!
+                              *now-ms* *run-at* *periodic-run*]]
    [lotuc.xnfun.rpc.mqtt-link :refer [new-mqtt-link]]
    [lotuc.xnfun.rpc.link :as l]))
 
 (defmacro ^:private ensure-node-link [node]
   (let [link (gensym)]
-    `(let [~link @(-> ~node :node-state :local :link)]
+    `(let [~link @(-> ~node :node-state :local :link)
+           ~link (and ~link @~link)]
        (when (nil? ~link) (throw (ex-info "link not created" {:node ~node})))
-       (when (.closed? @~link) (throw (ex-info "link closed" {:node ~node})))
-       @~link)))
+       (when (.closed? ~link) (throw (ex-info "link closed" {:node ~node})))
+       ~link)))
 
 (defmacro ^:private send-msg
   ([node msg]
@@ -112,28 +120,25 @@
 (defn- make-node-state
   "State of the node.
 
-  Notice that `:hb` and `:hb-listener` are both a map containing `:cancel`
-  function for cancelling its computation.
-
   State contains:
   - `:local`: All loccal states.
-    - `:hb`: a delayed computation for doing heartbeat.
-    - `:hb-listener`:  a delayed computation for doing heartbeat listening.
+    - `:hb-timer`: a delayed computation for doing heartbeat.
     - `:functions`: Functions we locally support.
     - `:futures`: Locally running function instances.
     - `:link`: Node's link.
   - `:remote`: What we know about remote nodes and interactions with remote nodes.
+    - `:hb-listener`:  a delayed computation for doing heartbeat listening.
     - `:nodes`: Knowleges about remote nodes. It's driven by *message*, so we
       choose agent for it's message's async handling.
     - `:promises`: Promises waiting for remote responses."
   []
-  {:local  {:hb          (atom nil)
-            :hb-listener (atom nil)
+  {:local  {:hb-timer  (atom nil)
             :functions (atom {})
             :futures   (atom {})
             :link      (atom nil)}
-   :remote {:nodes     (agent {})
-            :promises  (atom {})}})
+   :remote {:hb-listener (atom nil)
+            :nodes       (agent {})
+            :promises    (atom {})}})
 
 (defn make-node
   "Create a node.
@@ -151,9 +156,17 @@
      :node-state   (make-node-state)}))
 
 (defn clean-node! [node]
-  (let [{:keys [hb link]} (-> node :node-state :local)]
-    (when-let [hb @hb]     (when (realized? hb) (:cancel @hb)))
-    (when-let [link @link] (when (realized? link) (.close! @link)))))
+  (let [{:keys [hb-timer link]} (-> node :node-state :local)]
+    (when-let [{:keys [cancel]}
+               (and hb-timer @hb-timer (realized? @hb-timer) @@hb-timer)]
+      (cancel))
+    (when-let [link (and link @link (realized? @link) @@link)]
+      (when (realized? link) (.close! @link)))))
+
+(defn node-promises [node] (-> node :node-state :remote :promises))
+(defn node-futures [node] (-> node :node-state :local :futures))
+(defn node-link [node] (-> node :node-state :local :link))
+(defn node-remote-nodes [node] (-> node :node-state :remote :nodes))
 
 (defn node-info
   "Retrieve node's supported functions as:
@@ -190,8 +203,21 @@
   ([node msg]
    (on-heartbeat! node msg (*now-ms*)))
   ([node hb-msg now-ms]
-   (let [nodes (get-in node [:node-state :remote :nodes])]
+   (let [nodes (node-remote-nodes node)]
      (send nodes on-heartbeat* hb-msg now-ms))))
+
+(defn- stop-node-link* [node-id link]
+  (when (and link (realized? link) @link (not (l/closed? @link)))
+    (log/debugf "[%s] closing previous link" node-id)
+    (l/close! @link))
+  nil)
+
+(defn stop-node-link! [{:as node :keys [node-id]}]
+  (swap!-swap-in-delayed!
+   (node-link node)
+   {:ignores-nil? true}
+   (partial stop-node-link* node-id))
+  node)
 
 (defn start-node-link!
   "Start node link."
@@ -199,19 +225,17 @@
   (let [link-options (-> node :node-options :link)
         link-module  (:xnfun/module link-options)]
     (if (= link-module 'xnfun.mqtt)
-      (let [link (-> node :node-state :local :link)
-            [old new]
-            (swap-vals! link (fn [_] (delay (new-mqtt-link node-id link-options))))]
-        (if (or (nil? old) (realized? old))
-          (try (when (and (not (nil? old)) (not (l/closed? @old)))
-                 (l/close! @old))
-               @new
-               (catch Exception _ (reset! link old)))
-          (do (reset! link old)
-              (->> {:node node} (ex-info "someone else is starting") throw))))
+      (swap!-swap-in-delayed!
+       (node-link node)
+       {:ignores-nil? false}
+       #(do
+          (stop-node-link* node-id %)
+          (log/debugf "[%s] start link" node-id)
+          (new-mqtt-link node-id link-options)))
       (->> {:node node}
            (ex-info "unkown link")
-           throw))))
+           throw))
+    node))
 
 (defn- do-heartbeat*
   ([node] (do-heartbeat* node (*now-ms*)))
@@ -237,71 +261,126 @@
   "If the remote node itself does not report it's hb options, we'll use current
   node's hb options as the default."
   [remote-nodes now-ms {:keys [hb-interval-ms hb-lost-ratio]}]
-  (->>
-   remote-nodes
-   (filter
-    (fn [[_ {:keys [hb-at node-options]}]]
-      (< (- now-ms hb-at)
-         (* (get-in node-options [:hb-options :hb-interval-ms] hb-interval-ms)
-            (get-in node-options [:hb-options :hb-lost-ratio] hb-lost-ratio)))))
-   (into {})))
+  (->> remote-nodes
+       (filter
+        (fn [[_ {:keys [hb-at node-options]}]]
+          (< (- now-ms hb-at)
+             (* (get-in node-options [:hb-options :hb-interval-ms] hb-interval-ms)
+                (get-in node-options [:hb-options :hb-lost-ratio] hb-lost-ratio)))))
+       (into {})))
 
 (defn remove-dead-workers!
   "Try remove all node that losts their heartbeat."
   ([node]
    (remove-dead-workers! node (*now-ms*)))
   ([{:as node :keys [node-options]} now-ms]
-   (let [nodes (get-in node [:node-state :remote :nodes])
+   (let [nodes (node-remote-nodes node)
          hb-options (get-in node [:node-options :hb-options])]
      (send nodes remove-dead-workers* now-ms hb-options))))
 
+(defn stop-heartbeat* [node-id hb-timer]
+  (when-let [{:keys [cancel]} (and hb-timer (realized? hb-timer) @hb-timer)]
+    (when cancel
+      (log/debugf "[%s] stop previous heartbeat" node-id)
+      (cancel)))
+  nil)
+
+(defn stop-heartbeat!
+  [{:as node :keys [node-id]}]
+  (swap!-swap-in-delayed!
+   (get-in node [:node-state :local :hb-timer])
+   {:ignores-nil? true}
+   (partial stop-heartbeat* node-id))
+  node)
+
 (defn start-heartbeat!
   [{:as node :keys [node-id]}]
+  (swap!-swap-in-delayed!
+   (get-in node [:node-state :local :hb-timer])
+   {:ignores-nil? false}
+   (fn [v]
+     (stop-heartbeat* node-id v)
 
-  (let [{:keys [hb-interval-ms hb-lost-ratio] :as node-hb-options}
-        (get-in node [:node-options :hb-options])]
-    @(swap!
-      (-> node :node-state :local :hb)
-      (fn [v]
-        (delay
-          (when v (try (.close @v) (catch Exception _)))
-          (let [hb-task
-                (*periodic-run* (*now-ms*)
-                                hb-interval-ms
-                                (partial do-heartbeat* node))
-                hb-check-task
-                (*periodic-run* (*now-ms*)
-                                (* hb-interval-ms hb-lost-ratio)
-                                (partial remove-dead-workers! node))]
+     (log/debugf "[%s] start heartbeat" node-id)
+     (let [hb-timer
+           (*periodic-run*
+            (*now-ms*)
+            (get-in node [:node-options :hb-options :hb-interval-ms])
+            (partial do-heartbeat* node))
 
-            (watch-heartbeat-state* node)
-            {:cancel (fn []
-                       (unwatch-hearbteat-state* node)
-                       (.close hb-task)
-                       (.close hb-check-task))}))))))
+           cancel-hb-timer
+           #(do (log/debugf "[%s] cancel heartbeat" node-id)
+                ((:cancel hb-timer)))
 
-(defn start-listen-for-heartbeat!
-  [node]
-  @(swap!
-    (-> node :node-state :local :hb-listener)
-    (fn [v]
-      (delay
-        (when (and v (realized? v)) (try (:cancel @v) (catch Exception _)))
-        {:cancel
-         (->> (fn [{:keys [data]}] (on-heartbeat! node data))
-              (add-sub node :hb))}))))
+           unwatch-hb-state
+           #(do (log/debugf "[%s] unwatch heartbeat related state" node-id)
+                (unwatch-hearbteat-state* node))]
 
-(defn get-remote-nodes
-  "get all remote nodes."
-  [node]
-  (-> node :node-state deref :worker-nodes))
+       (log/debugf "[%s] start watch heartbeat related state" node-id)
+       (watch-heartbeat-state* node)
+
+       {:cancel #(do (unwatch-hb-state) (cancel-hb-timer))
+        :hb-timer hb-timer
+        :hb-state-watcher {:cancel unwatch-hb-state}})))
+  node)
+
+(defn stop-heartbeat-listener* [node-id hb-listener]
+  (when-let [{:keys [cancel]} (and hb-listener (realized? hb-listener) @hb-listener)]
+    (when cancel
+      (log/debugf "[%s] stop heartbeat listener" node-id)
+      (cancel)))
+  nil)
+
+(defn stop-heartbeat-listener!
+  [{:as node :keys [node-id]}]
+  (swap!-swap-in-delayed!
+   (get-in node [:node-state :remote :hb-listener])
+   {:ignores-nil? true}
+   (partial stop-heartbeat-listener* node-id))
+  node)
+
+(defn start-heartbeat-listener!
+  [{:as node :keys [node-id]}]
+  (swap!-swap-in-delayed!
+   (get-in node [:node-state :remote :hb-listener])
+   {:ignores-nil? false}
+   (fn [v]
+     (stop-heartbeat-listener* node-id v)
+     (log/infof "[%s] start heartbeat listener" node-id)
+
+     (log/debugf "[%s] start remote node heartbeat checker" node-id)
+     (let [hb-check-timer
+           (*periodic-run*
+            (*now-ms*)
+            (let [{:keys [hb-interval-ms hb-lost-ratio]}
+                  (get-in node [:node-options :hb-options])]
+              (* hb-interval-ms hb-lost-ratio))
+            (partial remove-dead-workers! node))
+
+           cancel-hb-check
+           (fn []
+             (log/debugf "[%s] stop remote node heartbeat checker" node-id)
+             ((:cancel hb-check-timer)))
+
+           unsub-hb-msg
+           (do (log/debugf "[%s] start subscribe to remote node heartbeat" node-id)
+               (->> (fn [{:keys [data]}] (on-heartbeat! node data))
+                    (add-sub node :hb)))
+
+           unsub-hb-msg
+           (fn []
+             (log/debugf "[%s] unsub remote node heartbeat" node-id)
+             (unsub-hb-msg))]
+       {:cancel #(do (unsub-hb-msg) (cancel-hb-check))
+        :hb-check-timer hb-check-timer
+        :unsub-hb-msg unsub-hb-msg}))))
 
 (defn select-remote-node
   "Filter out node that satisties the condition and randomly selects one.
   - `match-fn`: matches if (match-fn node)"
   [{:as node} {:keys [match-fn]}]
   (let [node-ids
-        (->> (get-remote-nodes node)
+        (->> @(node-remote-nodes node)
              (filter #(if match-fn (match-fn (second %)) true))
              (map first))]
     (if (empty? node-ids) nil (rand-nth node-ids))))
@@ -345,7 +424,7 @@
     - `:typ=:xnfun/cancel`: Cancellation message.
     - `:typ=:xnfun/to-callee`: Message to callee."
   [node fun-name params
-   & {:keys [out-c in-c req-meta]}]
+   & {:as options :keys [out-c in-c req-meta]}]
   (let [{:keys [function arity]}
         (-> node
             (get-in [:node-state :local :functions])
@@ -376,24 +455,55 @@
     describing the error.
   "
   [{:as node :keys [node-id]} req-id {:as r :keys [status data]}]
-  (let [[old _]
-        (swap-vals!
-         (-> node :node-state :remote :promises)
-         (fn [m] (dissoc m req-id)))]
+  (let [[old _] (swap-vals! (node-promises node) (fn [m] (dissoc m req-id)))]
     (if-let [p (get old req-id)]
       (let [{:keys [hb-lost-timer timeout-timer res-promise]} @p]
         (log/debugf "[%s] fullfilled [%s]: %s" node-id req-id data)
         (deliver res-promise r)
-        (when hb-lost-timer (.close hb-lost-timer))
-        (when timeout-timer (.close timeout-timer)))
+        (when-let [{:keys [cancel]} hb-lost-timer] (cancel))
+        (when-let [{:keys [cancel]} timeout-timer] (cancel)))
       (log/debugf "[%s] request not found [%s]: %s" node-id req-id r))))
 
 (defn get-promise
   "Get the submitted promsie by [[submit-promise!]]."
   [node req-id]
-  (when-let [p (-> @(get-in node [:node-state :remote :promises])
-                   (get req-id))]
-    @p))
+  (when-let [p (-> @(node-promises node) (get req-id))]
+    (when (realized? p) @p)))
+
+(defn- promise-hb
+  [{:as node :keys [node-id]} req-id]
+  (when-let [{:as req-meta :keys [hb-lost-ratio hb-interval-ms]}
+             (get-in (get-promise node req-id) [:request :req-meta])]
+    (when (or (not hb-lost-ratio) (not hb-interval-ms))
+      (throw (ex-info "illegal promise-hb" {:req-id req-id :req-meta req-meta})))
+
+    (swap!-swap-in-delayed!
+     (node-promises node)
+     {:ignores-nil? true :ks [req-id]}
+     (fn [p]
+       (let [{:keys [hb-lost-timer]} @p]
+         (when-let [{:keys [cancel]} hb-lost-timer] (cancel))
+
+         (let [hb-lost-at
+               (+ (*now-ms*) (* hb-lost-ratio hb-interval-ms))
+
+               on-hb-lost
+               (fn [at]
+                 (->> {:status :xnfun/err
+                       :data {:typ :timeout :reason "hb-lost" :timeout-at at}}
+                      (fullfill-promise! node req-id)))]
+           (log/debugf "[%s][%s] heartbeat will lost in (* %s %s)ms"
+                       node-id req-id hb-lost-ratio hb-interval-ms)
+           (-> @p
+               (assoc :hb-lost-at hb-lost-at)
+               (assoc :hb-lost-timer (*run-at* hb-lost-at on-hb-lost)))))))))
+
+(defn- promise-submit-timeout-handler
+  [node req-id timeout-ms]
+  (->> #(->> {:status :xnfun/err
+              :data {:typ :timeout :reason "timeout" :timeout-at %}}
+             (fullfill-promise! node req-id))
+       (*run-at* (+ (*now-ms*) timeout-ms))))
 
 (defn submit-promise!
   "Submit promise to node.
@@ -405,148 +515,113 @@
   - `request`: {:keys [`req-meta`]}"
   [{:as node :keys [node-id]}
    {:as request :keys [req-meta]}]
-  (let [promises (-> node :node-state :remote :promises)
-        req-meta (make-req-meta req-meta)
-        req-id   (:req-id req-meta)
+  (let [req-meta (make-req-meta req-meta)
         request  (assoc request :req-meta req-meta)
 
-        {:keys [timeout-ms hb-lost-ratio hb-interval-ms]}
+        {:keys [req-id timeout-ms hb-lost-ratio hb-interval-ms]}
         req-meta
 
-        on-timeout
-        (fn [_]
-          (->> {:status :xnfun/err :data {:typ :timeout :reason "timeout"}}
-               (fullfill-promise! node req-id)))
+        _ (log/debugf "[%s] submit promise [%s]" node-id req-id)
 
-        on-hb-lost
-        (fn [_]
-          (->> {:status :xnfun/err :data {:typ :timeout :reason "hb-lost"}}
-               (fullfill-promise! node req-id)))
-
-        do-hb
+        create-promise
         (fn []
-          (let [hb-lost-at (+ (*now-ms*) (* hb-lost-ratio hb-interval-ms))]
-            {:hb-lost-at hb-lost-at
-             :hb-lost-timer (*run-at* hb-lost-at on-hb-lost)}))
+          (let [p {:res-promise   (promise)
+                   :request       request
+                   :timeout-timer (promise-submit-timeout-handler node req-id timeout-ms)}]
+            (if (and hb-lost-ratio hb-interval-ms)
+              (let [hb (fn [] (promise-hb node req-id))]
+                (hb)
+                (assoc p :hb hb))
+              p)))
 
-        hb
-        (fn []
-          (-> (swap!
-               promises
-               (fn [m]
-                 (if-let [p (get m req-id)]
-                   (delay
-                     (let [{:as p :keys [hb-lost-timer]} @p]
-                       (when hb-lost-timer (.close hb-lost-timer))
-                       (log/debugf "[%s][%s] heartbeat will lost in (* %s %s)ms"
-                                   node-id req-id hb-lost-ratio hb-interval-ms)
-                       (merge p (do-hb))))
-                   m)))
-              (get req-id (delay nil))
-              deref))
+        r
+        @(-> (swap!-swap-in-delayed!
+              (node-promises node)
+              {:ignores-nil? false :ks [req-id]}
+              #(or % (create-promise)))
+             (get req-id))]
+    r))
 
-        p
-        (-> (swap!
-             promises
-             (fn [m]
-               (if (contains? m req-id)
-                 m
-                 (->> (delay
-                        (cond-> {:res-promise   (promise)
-                                 :request       request
-                                 :timeout-timer (*run-at*
-                                                 (+ (*now-ms*) timeout-ms)
-                                                 on-timeout)}
-                          hb-interval-ms (assoc :hb hb)
-                          hb-interval-ms (merge (do-hb))))
-                      (assoc m req-id)))))
-            (get req-id)
-            deref)]
-    p))
-
-(defn- cleanup-function-call
+(defn- call-request-cleanup
   [{:as node :keys [node-id]} req-id]
-  (let [[old _] (swap-vals!
-                 (-> node :node-state :local :futures)
-                 #(dissoc % req-id))]
+  (let [[old _] (swap-vals! (node-futures node) #(dissoc % req-id))]
     (when-let [req (get old req-id)]
-      (let [{:keys [in-c out-c hb-lost-timer timeout-timer]} @req]
+      (let [{:keys [in-c out-c in-c-internal out-c-internal hb-lost-timer timeout-timer]} @req]
         (future
           (Thread/sleep 100)
+          (close! in-c-internal)
+          (close! out-c-internal)
           (close! out-c)
           (close! in-c)
-          (when hb-lost-timer (.close hb-lost-timer))
-          (when timeout-timer (.close timeout-timer)))))))
+          (when-let [{:keys [cancel]} hb-lost-timer] (cancel))
+          (when-let [{:keys [cancel]} timeout-timer] (cancel)))))))
 
-(defn- submit-function-call!*
+(defn- get-call
+  "Get the successfully submitted call."
+  [node req-id]
+  (when-let [f (-> @(node-futures node) (get req-id))]
+    (when (realized? f) @f)))
+
+(defn- call-request-cancel
+  "Cancel the call.
+
+  Arguments:
+  `:reason`: {:keys [typ data]}, `typ` may be:
+    - `:timeout`
+    - `:xnfun/caller-cancel`
+  "
+  [node req-id reason]
+  (when-let [{:keys [in-c-internal running-future]} (get-call node req-id)]
+    (>!! in-c-internal {:typ :xnfun/cancel :data reason})
+    (future (Thread/sleep 100) (future-cancel running-future))))
+
+(defn- call-request-hb [{:as node :keys [node-id]} req-id]
+  (swap!-swap-in-delayed!
+   (node-futures node)
+   {:ignores-nil? true :ks [req-id]}
+   (fn [p]
+     (when-let [hb-lost-timer (and p (:hb-lost-timer @p))]
+       (when-let [{:keys [cancel]} hb-lost-timer] (cancel)))
+
+     (let [{:keys [hb-lost-ratio hb-interval-ms]} (get-in @p [:request :req-meta])
+           hb-lost-at (+ (*now-ms*) (* hb-lost-ratio hb-interval-ms))
+
+           on-hb-lost
+           (fn [at]
+             (->> {:typ :timeout :data {:reason "hb-lost" :at at}}
+                  (call-request-cancel node req-id)))]
+       (log/debugf "[%s][%s] heartbeat will lost in (* %s %s)ms"
+                   node-id req-id hb-lost-ratio hb-interval-ms)
+       (-> @p
+           (assoc :hb-lost-at hb-lost-at)
+           (assoc :hb-lost-timer (*run-at* hb-lost-at on-hb-lost)))))))
+
+(defn- submit-call*
   [{:as node :keys [node-id]}
-   fun-name params {:as options :keys [req-meta in-c out-c]}]
-  (let [futures        (-> node :node-state :local :futures)
-        in-c-internal  (chan 1)
+   fun-name params
+   {:as options :keys [req-meta in-c out-c]
+    {:keys [req-id timeout-ms hb-interval-ms hb-lost-ratio]} :req-meta}]
+  (let [request {:fun-name fun-name
+                 :params params
+                 :req-meta req-meta}
+
         out-c-internal (chan 1)
+        in-c-internal (chan 1)
 
-        {:keys [timeout-ms hb-interval-ms hb-lost-ratio req-id]}
-        req-meta
-
-        cleanup
-        (fn []
-          (future
-            (Thread/sleep 100)
-            (close! in-c-internal)
-            (close! out-c-internal))
-          (cleanup-function-call node req-id))
-
-        f
-        (future
-          (try
-            (let [p {:in-c in-c-internal :out-c out-c-internal :req-meta req-meta}
-                  r (call-function! node fun-name params p)]
-              (>!! out-c {:status :ok :data r})
-              r)
-            (catch Exception e
-              (>!! out-c {:status :err :exception e})
-              (throw e))
-            (finally
-              (cleanup))))
-
-        cancel-run
-        (fn [data]
-          (>!! in-c-internal {:typ :xnfun/cancel :data data})
-          (future (Thread/sleep 100) (future-cancel f)))
-
-        on-timeout
-        (fn [_]
-          (let [d {:typ :timeout :reason "timeout"}]
-            (cancel-run d)
-            (>!! out-c {:status :xnfun/err :data d})))
-
-        on-hb-lost
-        (fn [_]
-          (let [d {:typ :timeout :reason "hb-lost"}]
-            (cancel-run d)
-            (>!! out-c {:status :xnfun/err :data d})))
-
-        do-hb
-        (fn []
-          (let [hb-lost-at (+ (*now-ms*) (* hb-lost-ratio hb-interval-ms))]
-            {:hb-lost-at hb-lost-at
-             :hb-lost-timer (*run-at* hb-lost-at on-hb-lost)}))
+        call-option
+        {:in-c in-c-internal :out-c out-c-internal :req-meta req-meta}
 
         hb
-        (fn []
-          (-> (swap!
-               futures
-               (fn [m]
-                 (if-let [p (get m req-id)]
-                   (delay
-                     (let [{:as p :keys [hb-lost-timer]} @p]
-                       (when hb-lost-timer (.close hb-lost-timer))
-                       (log/debugf "[%s][%s] heartbeat will lost in (* %s %s)ms"
-                                   node-id req-id hb-lost-ratio hb-interval-ms)
-                       (merge p (do-hb))))
-                   m)))
-              (get req-id (delay nil))
-              deref))]
+        (when (and hb-interval-ms hb-lost-ratio) (and hb-interval-ms hb-lost-ratio)
+              #(call-request-hb node req-id))
+
+        r {:req-id req-id
+           :submit-at (*now-ms*)
+           :request request
+           :in-c in-c
+           :out-c out-c
+           :in-c-internal in-c-internal
+           :out-c-internal out-c-internal}]
 
     (log/debugf "[%s][%s] waiting for callee message" node-id req-id)
     (go-loop [d (<! out-c-internal)]
@@ -554,7 +629,7 @@
         (try
           (log/debugf "[%s][%s][%s] callee message: %s" node-id req-id typ d)
           ;; all message counts as heartbeat message.
-          (when hb-interval-ms (future (hb)))
+          (when hb (hb))
 
           ;; Forward message, and always blocking when forwarding.
           (if (#{:xnfun/hb :xnfun/to-caller} typ)
@@ -570,7 +645,8 @@
         (try
           (cond
             (= typ :xnfun/cancel)
-            (cancel-run {:typ :xnfun/caller-cancel :data data})
+            (->> {:typ :xnfun/caller-cancel :data data}
+                 (call-request-cancel node req-id))
 
             (= typ :xnfun/to-callee)
             (>!! in-c-internal d)
@@ -581,24 +657,23 @@
             (log/warnf e "[%s][%s] error handling msg from caller: %s" node-id req-id d)))
         (recur (<! in-c))))
 
-    (cond-> {:req-id    req-id
-             :submit-at (*now-ms*)
-             :request   {:fun-name fun-name
-                         :params params
-                         :req-meta req-meta}
-             :running-future f
-             :in-c           in-c
-             :out-c          out-c
-             :timeout-timer (*run-at*
-                             (+ (*now-ms*) timeout-ms)
-                             on-timeout)}
-      hb-interval-ms (assoc :hb hb)
-      hb-interval-ms (merge (do-hb)))))
+    (cond-> r
+      true
+      (assoc :timeout-timer
+             (*run-at*
+              (+ (*now-ms*) timeout-ms)
+              (fn [at]
+                (->> {:typ :timeout :data {:reason "timeout" :at at}}
+                     (call-request-cancel node req-id)))))
 
-(defn- get-call [node req-id]
-  (when-let [f (-> @(-> node :node-state :local :futures)
-                   (get req-id))]
-    @f))
+      true
+      (assoc :running-future
+             (future
+               (try (call-function! node fun-name params call-option)
+                    (finally (call-request-cleanup node req-id)))))
+
+      (and hb-interval-ms hb-lost-ratio)
+      (assoc :hb #(call-request-hb node req-id)))))
 
 (defn submit-call!
   "Submit function to node and run it asynchronously.
@@ -633,14 +708,11 @@
                      (assoc :req-meta req-meta)
                      (assoc :in-c (chan 1))
                      (assoc :out-c (or out-c (chan (dropping-buffer 1)))))]
-    (-> (swap!
-         (-> node :node-state :local :futures)
-         (fn [m]
-           (->>
-            #(or % (delay (submit-function-call!* node fun-name params options)))
-            (update m req-id))))
-        (get req-id)
-        deref)))
+    @(-> (swap!-swap-in-delayed!
+          (node-futures node)
+          {:ignores-nil? false :ks [req-id]}
+          #(or % (submit-call* node fun-name params options)))
+         (get req-id))))
 
 ;; RPC related data
 ;; :req
@@ -735,8 +807,7 @@
             options {:out-c out-c :req-meta req-meta}
 
             send-resp
-            (fn [d] (->> (with-meta {:typ :resp :data d} m)
-                         (l/send-msg (ensure-node-link node))))
+            (fn [d] (send-msg node {:typ :resp :data d} m))
 
             {:keys [out-c running-future]}
             (submit-call! node fun-name params options)]
@@ -754,73 +825,131 @@
    fun-name params callee-node-id
    & {:as options :keys [req-meta out-c]}]
 
-  (let [link    (ensure-node-link node)
-        in-c  (chan 1)
+  (let [in-c  (chan 1)
         out-c (or out-c (chan (dropping-buffer 1)))
 
-        p        (submit-promise! node {:req-meta req-meta
-                                        :fun-name fun-name
-                                        :params params
-                                        :callee-node-id callee-node-id})
-        req-meta (-> p :request :req-meta)
-        req-id   (:req-id req-meta)
+        p (->> {:req-meta req-meta
+                :fun-name fun-name
+                :params params
+                :callee-node-id callee-node-id
+                :in-c in-c
+                :out-c out-c}
+               (submit-promise! node))
 
-        m {:callee-node-id callee-node-id :req-id req-id}
+        req-id   (-> p :request :req-meta :req-id)
+        msg-meta {:callee-node-id callee-node-id :req-id req-id}
 
-        send-req (fn [msg] (->> (with-meta msg m) (l/send-msg link)))]
+        send-req (fn [msg] (send-msg node {:typ :req :data msg} msg-meta))]
 
-    ;; Handle caller message from `in-c`
+    (log/debugf "[%s] [-> %s %s] start handle caller message"
+                node-id callee-node-id req-id)
     (remote-call-client-handle-caller-msg
      {:req-id req-id :in-c in-c :send-req send-req})
 
-    (let [handle-fn
-          (partial remote-call-client-handle-callee-msg
-                   {:node node :req-id req-id :out-c out-c})
+    (log/debugf "[%s] [-> %s %s] start handle callee message"
+                node-id callee-node-id req-id)
+    (let [handle-fn (->> {:node node :req-id req-id :out-c out-c}
+                         (partial remote-call-client-handle-callee-msg))]
+      (add-sub node :resp handle-fn msg-meta))
 
-          subscription
-          (with-meta {:types [:resp] :handle-fn handle-fn} m)]
-      (l/add-subscription link subscription))
-
+    (log/debugf "[%s] [-> %s %s] initiate request :req :xnfun/call"
+                node-id callee-node-id req-id)
     (send-req {:typ :xnfun/call :data [[fun-name params] req-meta]})
     p))
 
 (defn submit-remote-call!
-  [{:as node :keys [node-id]}
-   fun-name params
+  [node fun-name params
    & {:as options :keys [req-meta out-c match-node-fn]}]
-  (let [callee-node-id
-        (select-remote-node node {:match-fn match-node-fn})]
+  (let [callee-node-id (select-remote-node node {:match-fn match-node-fn})]
     (submit-remote-call-to-node! node fun-name params callee-node-id options)))
 
 (defn serve-remote-call!
   [{:as node :keys [node-id]}]
-  (let [link         (ensure-node-link node)
-        handle-fn    (partial remote-call-server-handle-caller-msg node)
-        subscription {:types [:req] :handle-fn handle-fn}]
-    (l/add-subscription link subscription)))
+  (let [handle-fn (partial remote-call-server-handle-caller-msg node)]
+    (add-sub node :req handle-fn)))
 
 (comment
 
   (defn n [v]
     (when v (try (clean-node! v) (catch Exception _)))
-    (make-node {:node-options {:hb-options {:hb-interval-ms 30000}}}))
+    (-> {:node-id "node-0"
+         :node-options {:hb-options
+                        {:hb-interval-ms 3000}}}
+        make-node))
+
   (defonce n0 (atom nil))
 
   (defn restart! []
-    (swap! n0 n)
+    (when-let [n0 @n0] (clean-node! n0))
+    (swap! n0 n))
+
+  (defn start-n0! []
     (doto @n0
       (start-node-link!)
       (start-heartbeat!)
-      (start-listen-for-heartbeat!)))
+      (start-heartbeat-listener!)))
+
+  (defn stop-n0! []
+    (doto @n0
+      (stop-heartbeat-listener!)
+      (stop-heartbeat!)
+      (stop-node-link!)))
+
+  (restart!)
+
+  (start-node-link! @n0)
+  (stop-node-link! @n0)
+
+  (start-heartbeat! @n0)
+  (stop-heartbeat! @n0)
+
+  (start-heartbeat-listener! @n0)
+  (stop-heartbeat-listener! @n0)
+
+  (def p0 (submit-promise! @n0 {:req-meta {:timeout-ms 3000}}))
+  (def p1 (submit-promise! @n0 {:req-meta {:timeout-ms 30000
+                                           :hb-interval-ms 3000}}))
+  ((:hb p1))
+
+  (= p1 (get-promise @n0 (get-in p1 [:request :req-meta :req-id])))
+  (fullfill-promise! @n0 (get-in p1 [:request :req-meta :req-id]) {:status :ok :data 10})
 
   (add-function! @n0 "add" (fn [[x y]] (+ x y)))
   (call-function! @n0 "add" [1 2])
+  (def c0 (submit-call! @n0 "add" [1 2]))
+
+  (add-function! @n0 "echo"
+                 (fn [_ {:as opt :keys [in-c out-c]
+                         {:keys [hb-interval-ms hb-lost-ratio]} :req-meta}]
+                   (let [hb (future (while true
+                                      (Thread/sleep hb-interval-ms)
+                                      (>!! out-c {:typ :xnfun/hb :data nil})))]
+                     (go-loop [d (<!! in-c)]
+                       (when-let [{:keys [typ data]} d]
+                         (case typ
+                           :xnfun/cancel (future-cancel hb)
+                           :xnfun/to-callee (>!! out-c {:typ :xnfun/to-caller :data data})
+                           (>!! out-c {:typ :xnfun/to-caller :data {:unkown d}}))
+                         (recur (<!! in-c))))
+                     @hb)))
+
+  (def c1 (submit-call! @n0 "echo" nil {:req-meta {:timeout-ms 60000
+                                                   :hb-interval-ms 3000
+                                                   :hb-lost-ratio 2.5}}))
+  (go-loop [d (<!! (:out-c c1))]
+    (when d
+      (println "recv: " d)
+      (recur (<!! (:out-c c1)))))
+  (future-cancel (:running-future c1))
+  (>!! (:in-c c1) {:typ :xnfun/to-callee :data "hello world"})
+  (>!! (:in-c c1) {:typ :xnfun/cancel :data nil})
 
   (serve-remote-call! @n0)
 
   (submit-remote-call! @n0 "add" [[1 2]])
 
   (clean-node! @n0)
+
   (agent-error (-> @n0 :node-state :remote :nodes))
   ;
   )
