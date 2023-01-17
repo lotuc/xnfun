@@ -84,6 +84,7 @@
                  (map (fn [{:keys [topic-filter]}]
                         [topic-filter (ms topic-filter)])))]
       (when-not (realized? sub-fn)
+        (log/debugf "start listen on %s" topic-filter)
         (mqtt/subscribe client topic-filter @sub-fn)))))
 
 (defn- remove-subscription*
@@ -115,7 +116,8 @@
     (doseq [{:keys [topic-filter]} type-handlers]
       (when (and (contains? old topic-filter) (not (contains? new topic-filter)))
         (let [{:keys [sub-fn]} (old topic-filter)]
-          (when (realized? sub-fn)
+          (when (and (realized? sub-fn)
+                     (mqtt/connected? client))
             (mqtt/unsubscribe client topic-filter)))))))
 
 (defmulti create-send-data
