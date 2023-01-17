@@ -1,4 +1,4 @@
-(ns lotuc.xnfun.rpc.mqtt-link
+(ns lotuc.xnfun.core.mqtt-link
   "MQTT implementation for [[XNFunLink]].
 
   We consider encode our data into MQTT's topic and payload.
@@ -6,7 +6,7 @@
   - [[create-send-data]]: Convert our data to topic and payload to be sent.
   - [[create-sub-data]]:: Convert our subscription to topic filter and handler
     function."
-  (:require [lotuc.xnfun.rpc.link :refer [XNFunLink]]
+  (:require [lotuc.xnfun.core.link :refer [XNFunLink]]
             [lotuc.xnfun.mqtt.client :as mqtt]
             [taoensso.nippy :as nippy]
             [clojure.tools.logging :as log]

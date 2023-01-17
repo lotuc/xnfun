@@ -1,6 +1,6 @@
 (ns examples.example1
   (:require [lotuc.xnfun.api :as xn]
-            [lotuc.xnfun.rpc.sample-funcs :as sample-funcs]))
+            [lotuc.xnfun.sample.sample-funcs :as sample-funcs]))
 
 ;;; Start node n0 and register add function to n0
 (def n0 (xn/start-node {}))

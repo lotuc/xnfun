@@ -1,5 +1,5 @@
 (ns lotuc.xnfun.api
-  (:require [lotuc.xnfun.rpc.nodev2 :as n]))
+  (:require [lotuc.xnfun.core.node :as n]))
 
 (defn start-node
   [{:as node :keys [node-id node-options]}]

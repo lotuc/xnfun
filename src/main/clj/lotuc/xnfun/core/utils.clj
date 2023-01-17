@@ -1,4 +1,4 @@
-(ns lotuc.xnfun.utils
+(ns lotuc.xnfun.core.utils
   (:require [chime.core :as chime])
   (:import (java.time Instant Duration)))
 

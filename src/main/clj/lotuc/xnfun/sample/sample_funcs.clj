@@ -1,4 +1,4 @@
-(ns lotuc.xnfun.rpc.sample-funcs
+(ns lotuc.xnfun.sample.sample-funcs
   (:require
    [clojure.core.async :refer [<! >!! go-loop put!]]
    [clojure.tools.logging :as log]))

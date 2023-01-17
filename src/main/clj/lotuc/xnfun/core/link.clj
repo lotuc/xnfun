@@ -1,4 +1,4 @@
-(ns lotuc.xnfun.rpc.link)
+(ns lotuc.xnfun.core.link)
 
 (defprotocol XNFunLink
   "All messages sending and receiving are the shape of:

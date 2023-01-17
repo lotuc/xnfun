@@ -1,6 +1,6 @@
 (ns examples.example2
   (:require [lotuc.xnfun.api :as xn]
-            [lotuc.xnfun.rpc.sample-funcs :as sample-funcs]
+            [lotuc.xnfun.sample.sample-funcs :as sample-funcs]
             [clojure.core.async :refer [go-loop put! <!]]))
 
 ;;; Start two nodes for demostration

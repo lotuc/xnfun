@@ -1,4 +1,4 @@
-(ns lotuc.xnfun.rpc.nodev2
+(ns lotuc.xnfun.core.node
   "Node abstraction for xnfun.
 
   - You can start a link (ex. MQTT link) for connecting with other nodes.
@@ -41,11 +41,10 @@
   (:require
    [clojure.core.async :refer [<! <!! >!! chan close! dropping-buffer go-loop]]
    [clojure.tools.logging :as log]
-   [lotuc.xnfun.utils :refer [max-arity
-                              swap!-swap-in-delayed!
-                              *now-ms* *run-at* *periodic-run*]]
-   [lotuc.xnfun.rpc.mqtt-link :refer [new-mqtt-link]]
-   [lotuc.xnfun.rpc.link :as l]))
+   [lotuc.xnfun.core.utils :refer [max-arity swap!-swap-in-delayed!
+                                   *now-ms* *run-at* *periodic-run*]]
+   [lotuc.xnfun.core.mqtt-link :refer [new-mqtt-link]]
+   [lotuc.xnfun.core.link :as l]))
 
 (defmacro ^:private ensure-node-link [node]
   (let [link (gensym)]
