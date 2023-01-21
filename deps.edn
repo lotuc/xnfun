@@ -12,6 +12,12 @@
                                                 :git/tag "v0.8.5"
                                                 :git/url "https://github.com/clojure/tools.build.git"}}
           :ns-default build}
+  :codox {:extra-deps {codox/codox {:mvn/version "0.10.8"}}
+          :exec-fn codox.main/generate-docs
+          :exec-args {:source-paths ["src/main/clj"]
+                      :namespaces [lotuc.xnfun.api
+                                   lotuc.xnfun.core.link
+                                   lotuc.xnfun.core.mqtt-link]}}
   :dev  {:extra-paths ["src/dev/clj" "src/dev/resources" "src/test/clj"]}
   :nrepl {:extra-deps {nrepl/nrepl {:mvn/version "1.0.0"}}
           :main-opts  ["-m" "nrepl.cmdline" "-i"]}
