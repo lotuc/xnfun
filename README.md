@@ -1,5 +1,9 @@
 # XNFUN (Cross-Node Functions)
 
+## Documentation
+
+* [API Docs](https://lotuc.org/xnfun/lotuc.xnfun.api.html)
+
 ## Sample
 
 All the samples assume a running MQTT broker at `tcp://localhost:1883` with no credentials.
