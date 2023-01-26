@@ -1,18 +1,6 @@
 (ns lotuc.xnfun.api
   (:require [lotuc.xnfun.core.node :as n]))
 
-(defn start-node
-  "Check [[n/make-node]] for `node-options`'s details.
-
-  Returns the node to operate on.
-  "
-  [{:as node :keys [node-id node-options]}]
-  (doto (n/make-node node)
-    (n/start-node-link!)
-    (n/start-heartbeat!)
-    (n/serve-remote-call!)
-    (n/start-heartbeat-listener!)))
-
 (defn stop-node
   "Stop the `node` started with [[start-node]]."
   [node]
@@ -20,7 +8,24 @@
     (n/stop-heartbeat-listener!)
     (n/stop-serve-remote-call!)
     (n/stop-heartbeat!)
-    (n/stop-node-link!)))
+    (n/stop-node-transport!)))
+
+(defn start-node
+  "Check [[lotuc.xnfun.core.node/make-node]] for `node-options`'s details.
+
+  Returns the node to operate on.
+  "
+  [{:as node :keys [node-id node-options]}]
+  (let [r (n/make-node node)]
+    (try
+      (doto r
+        (n/start-node-transport!)
+        (n/start-heartbeat!)
+        (n/serve-remote-call!)
+        (n/start-heartbeat-listener!))
+      (catch Exception e
+        (stop-node r)
+        (throw e)))))
 
 (defn add-function
   "Register a function to given `node`.

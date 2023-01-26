@@ -17,26 +17,26 @@
                                      :hb-lost-ratio 2}}))
 
 ;;; Channel for receiving message from callee
-(def out-c (:out-c c))
+(def out-c (get-in c [:request :out-c]))
 ;;; Channel for sending message to callee
-(def in-c (:in-c c))
+(def in-c (get-in c [:request :in-c]))
 
 ;;; Here we setup a go loop for recv calc-res
-(go-loop [{:as v :keys [type data]} (<! out-c)]
-  (if v (do (when (= type :calc-res)
+(go-loop [{:as v :keys [typ data]} (<! out-c)]
+  (if v (do (when (= typ :xnfun/to-caller)
               (let [{:keys [exp res]} data]
                 (println "> " exp)
                 (println res)))
-            (recur (<! (:out-c c))))
+            (recur (<! out-c)))
       (println "quit")))
 
 ;;; Send some expresstion to the callee for calculation; obeserve calculated
 ;;; result.
-(put! in-c {:type :calc :data '(+ 1 2)})
-(put! in-c {:type :calc :data '(+ 1 (* 3 2) (+ 3 4))})
+(put! in-c {:typ :xnfun/to-callee :data '(+ 1 2)})
+(put! in-c {:typ :xnfun/to-callee :data '(+ 1 (* 3 2) (+ 3 4))})
 
 ;;; Stop the callee
-(put! in-c {:type :xnfun/cancel})
+(put! in-c {:typ :xnfun/cancel})
 
 ;;; Stop nodes.
 (xn/stop-node n0)

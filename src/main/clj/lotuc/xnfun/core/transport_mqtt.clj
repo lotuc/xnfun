@@ -1,12 +1,12 @@
-(ns lotuc.xnfun.core.mqtt-link
-  "MQTT implementation for [[XNFunLink]].
+(ns lotuc.xnfun.core.transport-mqtt
+  "MQTT implementation for [[lotuc.xnfun.core.transport/XNFunTransport]].
 
   We consider encode our data into MQTT's topic and payload.
 
   - [[create-send-data]]: Convert our data to topic and payload to be sent.
   - [[create-sub-data]]:: Convert our subscription to topic filter and handler
     function."
-  (:require [lotuc.xnfun.core.link :refer [XNFunLink]]
+  (:require [lotuc.xnfun.core.transport :refer [XNFunTransport]]
             [lotuc.xnfun.mqtt.client :as mqtt]
             [taoensso.nippy :as nippy]
             [clojure.tools.logging :as log]
@@ -216,7 +216,7 @@
      (let [m (topic:resp:parse topic)]
        (with-meta {:typ :resp :data data} m)))])
 
-(defn- create-mqtt-xnfun-link
+(defn- create-mqtt-xnfun-transport
   [{:keys [client closed create-send-data* create-sub-data* subscriptions]}]
   (let [subscription-to-type-handlers
         (fn [{:as subscription :keys [types handle-fn]}]
@@ -228,7 +228,7 @@
                          :topic-filter topic-filter
                          :message-adapter message-adapter
                          :handle-fn handle-fn})))))]
-    (reify XNFunLink
+    (reify XNFunTransport
       (send-msg [_ {:as msg :keys [data]}]
         (let [[topic data] (create-send-data* msg)]
           (mqtt/publish client topic (*to-mqtt-payload* data))))
@@ -253,17 +253,17 @@
         (try (mqtt/disconnect client)
              (finally (reset! closed true)))))))
 
-(defn- new-mqtt-link*
+(defn- new-mqtt-transport*
   "This is the internal implementation that expose the internal state for
   development."
-  [node-id {:as mqtt-link :keys [topic-prefix mqtt-config]}]
+  [node-id {:as mqtt-transport :keys [topic-prefix mqtt-config]}]
   (let [mqtt-topic-prefix (str/replace (or topic-prefix "") #"/+$" "")
 
         state
         {:client (mqtt/make-client mqtt-config)
          ;; topic to handler functions
          :subscriptions (atom {})
-         ;; if the link is closed
+         ;; if the transport is closed
          :closed (atom false)}
 
         options
@@ -274,11 +274,11 @@
             (assoc :create-sub-data*
                    #(binding [*ns-prefix* mqtt-topic-prefix]
                       (create-sub-data node-id %1 %2))))]
-    {:link (create-mqtt-xnfun-link options)
+    {:transport (create-mqtt-xnfun-transport options)
      :state state}))
 
-(defn new-mqtt-link [node-id {:as mqtt-link :keys [topic-prefix mqtt-config]}]
-  (:link (new-mqtt-link* node-id mqtt-link)))
+(defn new-mqtt-transport [node-id {:as mqtt-transport :keys [topic-prefix mqtt-config]}]
+  (:transport (new-mqtt-transport* node-id mqtt-transport)))
 
 (comment
 
@@ -288,8 +288,8 @@
   ;; Setup
   (do
     (defn n [v node-id]
-      (when v (try (.close! (:link v)) (catch Exception _)))
-      (new-mqtt-link*
+      (when v (try (.close! (:transport v)) (catch Exception _)))
+      (new-mqtt-transport*
        node-id
        {:mqtt-config
         {:broker "tcp://127.0.0.1:1883"
@@ -302,18 +302,18 @@
                  (->> (format "\n  msg:%s\n  meta: %s" msg (meta msg))
                       (println name "recv:"))))
 
-    (defonce sub0 (fn [s] (.add-subscription (:link @l0) s)))
-    (defonce unsub0 (fn [s] (.remove-subscription (:link @l0) s)))
-    (defonce pub0 (fn [m] (.send-msg (:link @l0) m)))
+    (defonce sub0 (fn [s] (.add-subscription (:transport @l0) s)))
+    (defonce unsub0 (fn [s] (.remove-subscription (:transport @l0) s)))
+    (defonce pub0 (fn [m] (.send-msg (:transport @l0) m)))
 
-    (defonce sub1 (fn [s] (.add-subscription (:link @l1) s)))
-    (defonce unsub1 (fn [s] (.remove-subscription (:link @l1) s)))
-    (defonce pub1 (fn [m] (.send-msg (:link @l1) m)))
+    (defonce sub1 (fn [s] (.add-subscription (:transport @l1) s)))
+    (defonce unsub1 (fn [s] (.remove-subscription (:transport @l1) s)))
+    (defonce pub1 (fn [m] (.send-msg (:transport @l1) m)))
 
     (defonce restart!
       (fn [] (swap! l0 n "node-0") (swap! l1 n "node-1") 'ok))
     (defonce cleanup
-      (fn [] (.close! (:link @l0)) (.close! (:link @l1)) 'ok)))
+      (fn [] (.close! (:transport @l0)) (.close! (:transport @l1)) 'ok)))
 
   ;; Heartbeat
   (do

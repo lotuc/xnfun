@@ -1,12 +1,12 @@
 (ns lotuc.xnfun.core.node
   "Node abstraction for xnfun.
 
-  - You can start a link (ex. MQTT link) for connecting with other nodes.
+  - You can start a transport (ex. MQTT transport) for connecting with other nodes.
   - You can register (capability) functions to current node.
   - You can submit function call to current node (call you registered functions).
   - You can register a promise to current node and maybe fullfill it later.
   - You can do call to other node through current node via your established
-    link
+    transport
 
   When caller call from one node to other node's function (callee), this will
   - Submit a promise in current node waiting for result.
@@ -17,10 +17,10 @@
   **Node**
   - [[make-node]]
   - [[node-info]]
-  - [[node-link]] [[node-futures]] [[node-promises]] [[node-remote-nodes]]
+  - [[node-transport]] [[node-futures]] [[node-promises]] [[node-remote-nodes]]
   - [[select-remote-node]]
 
-  - [[start-node-link!]] [[stop-node-link!]]
+  - [[start-node-transport!]] [[stop-node-transport!]]
   - [[on-heartbeat!]]  [[remove-dead-workers!]]
   - [[start-heartbeat!]] [[stop-heartbeat!]]
   - [[start-heartbeat-listener!]] [[stop-heartbeat-listener!]]
@@ -43,31 +43,31 @@
    [clojure.tools.logging :as log]
    [lotuc.xnfun.core.utils :refer [max-arity swap!-swap-in-delayed!
                                    *now-ms* *run-at* *periodic-run*]]
-   [lotuc.xnfun.core.mqtt-link :refer [new-mqtt-link]]
-   [lotuc.xnfun.core.link :as l]))
+   [lotuc.xnfun.core.transport-mqtt :refer [new-mqtt-transport]]
+   [lotuc.xnfun.core.transport :as l]))
 
-(defmacro ^:private ensure-node-link [node]
-  (let [link (gensym)]
-    `(let [~link @(-> ~node :node-state :local :link)
-           ~link (and ~link @~link)]
-       (when (nil? ~link) (throw (ex-info "link not created" {:node ~node})))
-       (when (.closed? ~link) (throw (ex-info "link closed" {:node ~node})))
-       ~link)))
+(defmacro ^:private ensure-node-transport [node]
+  (let [transport (gensym)]
+    `(let [~transport @(-> ~node :node-state :local :transport)
+           ~transport (and ~transport @~transport)]
+       (when (nil? ~transport) (throw (ex-info "transport not created" {:node ~node})))
+       (when (.closed? ~transport) (throw (ex-info "transport closed" {:node ~node})))
+       ~transport)))
 
 (defmacro ^:private send-msg
   ([node msg]
-   `(l/send-msg (ensure-node-link ~node) ~msg))
+   `(l/send-msg (ensure-node-transport ~node) ~msg))
   ([node msg msg-meta]
-   `(l/send-msg (ensure-node-link ~node) (with-meta ~msg ~msg-meta))))
+   `(l/send-msg (ensure-node-transport ~node) (with-meta ~msg ~msg-meta))))
 
 (defmacro ^:private add-sub
   ([node typ handle-fn]
    `(l/add-subscription
-     (ensure-node-link ~node)
+     (ensure-node-transport ~node)
      {:types [~typ] :handle-fn ~handle-fn}))
   ([node typ handle-fn subscription-meta]
    `(l/add-subscription
-     (ensure-node-link ~node)
+     (ensure-node-transport ~node)
      (with-meta
        {:types [~typ] :handle-fn ~handle-fn}
        ~subscription-meta))))
@@ -89,10 +89,10 @@
       (update :hb-interval-ms #(or % 30000))
       (update :hb-lost-ratio  #(or % 2.5))))
 
-(defn- make-node-link-options
-  "We use mqtt as the default communication link."
-  [node-id link]
-  (or link
+(defn- make-node-transport-options
+  "We use mqtt as the default communication transport."
+  [node-id transport]
+  (or transport
       {:xnfun/module 'xnfun.mqtt
        :mqtt-topic-prefix ""
        :mqtt-config
@@ -109,14 +109,14 @@
     - `:hb-interval-ms`: Heartbeat interval for this node.
     - `:hb-lost-ratio`: Consider this node to be heartbeat lost in
       (* hb-lost-ratio hb-interval-ms) when no heartbeat occurs.
-  - `:link`: The link this node would make to connect to other nodes.
+  - `:transport`: The transport this node would make to connect to other nodes.
 
   Arguments:
   - `node-options`: default options."
   [node-id node-options]
   (-> (or node-options {})
       (update :hb-options #(make-node-hb-options %))
-      (update :link #(make-node-link-options node-id %))))
+      (update :transport #(make-node-transport-options node-id %))))
 
 (defn- make-node-state
   "State of the node.
@@ -126,7 +126,7 @@
     - `:hb-timer`: a delayed computation for doing heartbeat.
     - `:functions`: Functions we locally support.
     - `:futures`: Locally running function instances.
-    - `:link`: Node's link.
+    - `:transport`: Node's transport.
   - `:remote`: What we know about remote nodes and interactions with remote nodes.
     - `:hb-listener`:  a delayed computation for doing heartbeat listening.
     - `:nodes`: Knowleges about remote nodes. It's driven by *message*, so we
@@ -137,7 +137,7 @@
    {:hb-timer     (atom nil)
     :functions    (atom {})
     :futures      (atom {})
-    :link         (atom nil)
+    :transport         (atom nil)
     :rpc-listener (atom nil)}
 
    :remote
@@ -149,7 +149,7 @@
   "Create a node.
 
   A node contains:
-  - `:node-id`: The global identifier for given connection link.
+  - `:node-id`: The global identifier for given connection transport.
   - `:node-options`: The options specified for given node. Check [[make-node-options]]
      for details.
   - `:node-state`: The mutable state for this node. Check [[make-node-state]] for
@@ -161,14 +161,14 @@
      :node-state   (make-node-state)}))
 
 (defn clean-node! [node]
-  (let [{:keys [hb-timer link]} (-> node :node-state :local)]
+  (let [{:keys [hb-timer transport]} (-> node :node-state :local)]
     (when-let [{:keys [cancel]} (and hb-timer @hb-timer @@hb-timer)]
       (cancel))
-    (when-let [link (and link @link @@link)]
-      (.close! link))))
+    (when-let [transport (and transport @transport @@transport)]
+      (.close! transport))))
 
 (defn node-futures [node] (-> node :node-state :local :futures))
-(defn node-link [node] (-> node :node-state :local :link))
+(defn node-transport [node] (-> node :node-state :local :transport))
 (defn node-hb-timer [node] (-> node :node-state :local :hb-timer))
 (defn node-functions [node] (-> node :node-state :local :functions))
 (defn node-rpc-listener [node] (-> node :node-state :local :rpc-listener))
@@ -215,34 +215,34 @@
    (let [nodes (node-remote-nodes node)]
      (send nodes on-heartbeat* hb-msg now-ms))))
 
-(defn- stop-node-link* [node-id link]
-  (when (and link @link (not (l/closed? @link)))
-    (log/debugf "[%s] closing previous link" node-id)
-    (l/close! @link))
+(defn- stop-node-transport* [node-id transport]
+  (when (and transport @transport (not (l/closed? @transport)))
+    (log/debugf "[%s] closing previous transport" node-id)
+    (l/close! @transport))
   nil)
 
-(defn stop-node-link! [{:as node :keys [node-id]}]
+(defn stop-node-transport! [{:as node :keys [node-id]}]
   (swap!-swap-in-delayed!
-   (node-link node)
+   (node-transport node)
    {:ignores-nil? true}
-   (partial stop-node-link* node-id))
+   (partial stop-node-transport* node-id))
   node)
 
-(defn start-node-link!
-  "Start node link."
-  [{:as node :keys [node-id] {:keys [link]} :node-state}]
-  (let [link-options (-> node :node-options :link)
-        link-module  (:xnfun/module link-options)]
-    (if (= link-module 'xnfun.mqtt)
+(defn start-node-transport!
+  "Start node transport."
+  [{:as node :keys [node-id] {:keys [transport]} :node-state}]
+  (let [transport-options (-> node :node-options :transport)
+        transport-module  (:xnfun/module transport-options)]
+    (if (= transport-module 'xnfun.mqtt)
       (swap!-swap-in-delayed!
-       (node-link node)
+       (node-transport node)
        {:ignores-nil? false}
        #(do
-          (stop-node-link* node-id %)
-          (log/debugf "[%s] start link" node-id)
-          (new-mqtt-link node-id link-options)))
+          (stop-node-transport* node-id %)
+          (log/debugf "[%s] start transport" node-id)
+          (new-mqtt-transport node-id transport-options)))
       (->> {:node node}
-           (ex-info "unkown link")
+           (ex-info "unkown transport")
            throw))
     node))
 
@@ -976,7 +976,7 @@
     (doto @n0
       (stop-heartbeat-listener!)
       (stop-heartbeat!)
-      (stop-node-link!)
+      (stop-node-transport!)
       (stop-serve-remote-call!)))
 
   (defn restart-n0! []
@@ -984,15 +984,15 @@
     (doto @n0
       (add-function! "add" add)
       (add-function! "echo" echo)
-      (start-node-link!)
+      (start-node-transport!)
       (start-heartbeat!)
       (start-heartbeat-listener!)
       (serve-remote-call!)))
 
   (restart!)
 
-  (start-node-link! @n0)
-  (stop-node-link! @n0)
+  (start-node-transport! @n0)
+  (stop-node-transport! @n0)
 
   (start-heartbeat! @n0)
   (stop-heartbeat! @n0)

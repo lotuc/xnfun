@@ -1,6 +1,6 @@
-(ns lotuc.xnfun.core.link)
+(ns lotuc.xnfun.core.transport)
 
-(defprotocol XNFunLink
+(defprotocol XNFunTransport
   "All messages sending and receiving are the shape of:
 
   {:keys [typ data}
@@ -17,7 +17,7 @@
 
   (send-msg
     [_ {:as msg :keys [typ data]}]
-    "Send given message to link base node's info.
+    "Send given message to transport base node's info.
 
     - `typ`: `:req`
       - metadata `:callee-node-id` is required.
@@ -53,8 +53,8 @@
 
   (closed?
     [_]
-    "If the link closed.")
+    "If the transport closed.")
 
   (close!
     [_]
-    "Close the link."))
+    "Close the transport."))

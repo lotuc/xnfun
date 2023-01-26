@@ -16,8 +16,8 @@
           :exec-fn codox.main/generate-docs
           :exec-args {:source-paths ["src/main/clj"]
                       :namespaces [lotuc.xnfun.api
-                                   lotuc.xnfun.core.link
-                                   lotuc.xnfun.core.mqtt-link]}}
+                                   lotuc.xnfun.core.transport
+                                   lotuc.xnfun.core.transport-mqtt]}}
   :dev  {:extra-paths ["src/dev/clj" "src/dev/resources" "src/test/clj"]}
   :nrepl {:extra-deps {nrepl/nrepl {:mvn/version "1.0.0"}}
           :main-opts  ["-m" "nrepl.cmdline" "-i"]}

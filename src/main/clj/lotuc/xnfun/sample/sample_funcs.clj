@@ -33,9 +33,9 @@
     {:keys [req-id]} :req-meta}]
   (let [stop (atom false)
         hb-num (atom 0)]
-    (go-loop [{:keys [type] :as d} (<! in-c)]
+    (go-loop [{:keys [typ] :as d} (<! in-c)]
       (when d
-        (when (= type :xnfun/cancel) (swap! stop (fn [_] true)))
+        (when (= typ :xnfun/cancel) (swap! stop (fn [_] true)))
         (recur (<! in-c))))
     (loop [nums nums r 0]
       (if (empty? nums)
@@ -46,8 +46,8 @@
           (if @stop
             :stopped
             (let [msg (if hb-with-msg
-                        {:type :msg :data (str "add " v)}
-                        {:type :xnfun/hb :data (swap! hb-num inc)})]
+                        {:typ :msg :data (str "add " v)}
+                        {:typ :xnfun/hb :data (swap! hb-num inc)})]
               (log/debugf "[%s] heartbeat with: %s" req-id msg)
               (when-not (>!! out-c msg)
                 (log/warnf "[%s] out-c closed" req-id))
@@ -59,7 +59,7 @@
   channel."
   [_ {:keys [in-c out-c]
       {:as req-meta
-       :keys [caller-node-id callee-node-id req-id hb-interval-ms]} :req-meta}]
+       :keys [req-id hb-interval-ms]} :req-meta}]
   (log/infof "start calculator: %s" req-meta)
   (let [p (promise)]
     (letfn [(calc [exp]
@@ -72,23 +72,22 @@
       ;; Keep heartbeat.
       (future
         (loop []
-          (put! out-c {:type :xnfun/hb})
+          (put! out-c {:typ :xnfun/hb})
           (log/debugf "[%s] heartbeat" req-id)
           (when (= :timeout (deref p hb-interval-ms :timeout)) (recur))))
 
       ;; Wait for message, do calculation, and return result.
       (go-loop []
-        (when-let [{:keys [type] :as d} (<! in-c)]
+        (when-let [{:keys [typ] :as d} (<! in-c)]
           (log/debugf "[%s] calculator - handling: %s" req-id d)
-          (case type
+          (case typ
             :xnfun/cancel
             (do (log/infof "[%s] cancelled" req-id)
                 (deliver p :cancel))    ; quit
 
-            :calc
+            :xnfun/to-callee
             (let [r (calc (:data d))]   ; calc
-              (log/infof "caller node: %s\ncallee node: %s" caller-node-id callee-node-id)
-              (put! out-c {:type :calc-res :data {:exp (:data d) :res r}})
+              (put! out-c {:typ :xnfun/to-caller :data {:exp (:data d) :res r}})
               (recur))
 
             (deliver p {:unkown d}))))
