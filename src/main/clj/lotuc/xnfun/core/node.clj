@@ -9,12 +9,14 @@
     transport
 
   When caller call from one node to other node's function (callee), this will
+
   - Submit a promise in current node waiting for result.
   - Submit a future (representing the remote computation, the callee) in remote
     node.
   - Create a bi-directional communication channel between caller and callee.
 
   **Node**
+
   - [[make-node]]
   - [[node-info]]
   - [[node-transport]] [[node-futures]] [[node-promises]] [[node-remote-nodes]]
@@ -26,15 +28,19 @@
   - [[start-heartbeat-listener!]] [[stop-heartbeat-listener!]]
 
   **Capabilities**
+
   - [[add-function!]] [[call-function!]]
 
   **Promises**
+
   - [[fullfill-promise!]] [[submit-promise!]]
 
-  **Function**
+  **Function call**
+
   - [[submit-call!]]
 
-  **Remote function**
+  **Remote function call**
+
   - [[submit-remote-call!]]
   - [[serve-remote-call!]] [[stop-serve-remote-call!]]
   "
@@ -43,7 +49,7 @@
    [clojure.tools.logging :as log]
    [lotuc.xnfun.core.utils :refer [max-arity swap!-swap-in-delayed!
                                    *now-ms* *run-at* *periodic-run*]]
-   [lotuc.xnfun.core.transport-mqtt :refer [new-mqtt-transport]]
+   [lotuc.xnfun.core.transport-mqtt :refer [make-mqtt-transport]]
    [lotuc.xnfun.core.transport :as l]))
 
 (defmacro ^:private ensure-node-transport [node]
@@ -105,13 +111,15 @@
   "Options of the node.
 
   Options contains:
+
   - `hb-options`:
-    - `:hb-interval-ms`: Heartbeat interval for this node.
-    - `:hb-lost-ratio`: Consider this node to be heartbeat lost in
-      (* hb-lost-ratio hb-interval-ms) when no heartbeat occurs.
+      - `:hb-interval-ms`: Heartbeat interval for this node.
+      - `:hb-lost-ratio`: Consider this node to be heartbeat lost in
+        (* hb-lost-ratio hb-interval-ms) when no heartbeat occurs.
   - `:transport`: The transport this node would make to connect to other nodes.
 
   Arguments:
+
   - `node-options`: default options."
   [node-id node-options]
   (-> (or node-options {})
@@ -240,7 +248,7 @@
        #(do
           (stop-node-transport* node-id %)
           (log/debugf "[%s] start transport" node-id)
-          (new-mqtt-transport node-id transport-options)))
+          (make-mqtt-transport node-id transport-options)))
       (->> {:node node}
            (ex-info "unkown transport")
            throw))
@@ -421,15 +429,16 @@
 (defn call-function!
   "Call registered function with name.
 
-  All data should be format of {:keys [typ data]}
+  All data should be format of `{:keys [typ data]}`
 
   Arguments:
+
   - `out-c` (optional): function can send message to caller via the channel
-    - `:typ=:xnfun/hb`: Long-running function heartbeat
-    - `:typ=:xnfun/to-caller`: Message to caller
+      - `:typ=:xnfun/hb`: Long-running function heartbeat
+      - `:typ=:xnfun/to-caller`: Message to caller
   - `in-c` (optional): caller send some signal to callee
-    - `:typ=:xnfun/cancel`: Cancellation message.
-    - `:typ=:xnfun/to-callee`: Message to callee."
+      - `:typ=:xnfun/cancel`: Cancellation message.
+      - `:typ=:xnfun/to-callee`: Message to callee."
   [node fun-name params
    & {:as options :keys [out-c in-c req-meta]}]
   (let [{:keys [function arity]}
@@ -451,12 +460,13 @@
   "Handling data from callee.
 
   Arguments:
+
   - `:status`: `:ok` or `:xnfun/err` or `:xnfun/remote-err` or `:err`
-    - When error is assured triggered by the user's function code, no matter it
-      runs locally or remotely, the status should be `:err`
-    - When error is not assured triggered by user's function code:
-      - `:xnfun/err`: Error occurs locally
-      - `:xnfun/remote-err`: Error occurs remotely
+      - When error is assured triggered by the user's function code, no matter it
+        runs locally or remotely, the status should be `:err`
+      - When error is not assured triggered by user's function code:
+          - `:xnfun/err`: Error occurs locally
+          - `:xnfun/remote-err`: Error occurs remotely
   - `:meta`: the call metadata.
   - `:data`: If `status=:ok`, means the fullfilled data; else the data
     describing the error.
@@ -519,7 +529,8 @@
   The submitted promise may be fullfilled on timeout. Or can be fullfilled
   manually with: [[fullfill-promise!]]
 
-  Returns: {:keys [res-promise request timeout-timer hb-lost-timer]}
+  Returns: `{:keys [res-promise request timeout-timer hb-lost-timer]}`
+
   - `request`: {:keys [`req-meta`]}"
   [{:as node :keys [node-id]}
    {:as request :keys [req-meta]}]
@@ -569,9 +580,10 @@
   "Cancel the call.
 
   Arguments:
-  `:reason`: {:keys [typ data]}, `typ` may be:
-    - `:timeout`
-    - `:xnfun/caller-cancel`
+
+  - `:reason`: {:keys [typ data]}, `typ` may be:
+      - `:timeout`
+      - `:xnfun/caller-cancel`
   "
   [node req-id reason]
   (when-let [{:keys [in-c-internal running-future]} (get-call node req-id)]
@@ -682,21 +694,24 @@
   "Submit function to node and run it asynchronously.
 
   Arguments
+
   - `out-c`: callee will send message (and heartbeat) throught this
      channel.
-     - If not given, will create a dropping buffer channel
-     - Notice that the out-c would block callee, so you should handle the message
-       as soon as possible.
+      - If not given, will create a dropping buffer channel
+      - Notice that the out-c would block callee, so you should handle the message
+        as soon as possible.
   - `req-meta`: Check [[make-req-meta]] for details.
 
-  Returns {:keys [req-id submit-at request running-future in-c out-c
-                  timeout-timer hb-lost-timer]}
+  Returns `{:keys [req-id submit-at request running-future in-c out-c
+                   timeout-timer hb-lost-timer]}`
 
   `in-c` accepts:
+
   - {`:typ` `:xnfun/cancel` `:data` ...}
   - {`:typ` `:xnfun/to-callee` `:data` ...}
 
   `out-c` returns:
+
   - {`:typ` `:xnfun/hb` `:data` ...}
   - {`:typ` `:xnfun/to-caller` `:data` ...}
 

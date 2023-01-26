@@ -1,22 +1,32 @@
 (ns lotuc.xnfun.core.transport-mqtt
   "MQTT implementation for [[lotuc.xnfun.core.transport/XNFunTransport]].
 
-  We consider encode our data into MQTT's topic and payload.
+  We encode our transferring data into MQTT's topic and payload.
 
   - [[create-send-data]]: Convert our data to topic and payload to be sent.
-  - [[create-sub-data]]:: Convert our subscription to topic filter and handler
-    function."
+  - [[create-sub-data]]:: Convert our subscription to topic filter and a message
+    adapter. The message adapter adapts the received payload & topic to the
+    message sent and pass it to the handler function."
   (:require [lotuc.xnfun.core.transport :refer [XNFunTransport]]
             [lotuc.xnfun.mqtt.client :as mqtt]
             [taoensso.nippy :as nippy]
             [clojure.tools.logging :as log]
             [clojure.string :as str]))
 
-(def ^:dynamic *ns-prefix* "")
+(def ^:dynamic ^:no-doc *ns-prefix* "")
 (def ^:private ver "v0")
 
-(def ^:dynamic *to-mqtt-payload* nippy/freeze)
-(def ^:dynamic *from-mqtt-payload* nippy/thaw)
+(def ^{:dynamic true
+       :no-doc true
+       :doc "A function accepts clojure object and serialize it to byte array.
+  Defaults to be [taoensso.nippy/freeze](https://github.com/ptaoussanis/nippy)"}
+  *to-mqtt-payload* nippy/freeze)
+
+(def ^{:dynamic true
+       :no-doc true
+       :doc "A function accepts byte array and deserialize it to clojure object.
+  Defaults to be [taoensso.nippy/thaw](https://github.com/ptaoussanis/nippy)"}
+  *from-mqtt-payload* nippy/thaw)
 
 (defn- handle-mqtt-message
   "Handle MQTT message with given handlers.
@@ -123,9 +133,9 @@
 (defmulti create-send-data
   "Convert the message to MQTT topic & payload.
 
-  Arguments: [node-id, {:as msg :keys [typ data}]
+  Arguments: `[node-id, {:as msg :keys [typ data}]`
 
-  Returns: [topic, payload]"
+  Returns: `[topic, payload]`"
   (fn [_node-id {:as msg :keys [typ]}] typ))
 
 (defmulti create-sub-data
@@ -134,10 +144,11 @@
   The message adapter convert the MQTT topic & payload to the sent message for
   `handler-fn`'s usage.
 
-  Arguments: [node-id {:as subscription :keys [handle-fn]} typ]
+  Arguments: `[node-id {:as subscription :keys [handle-fn]} typ]`
+
   - `node`: current node
 
-  Returns: [topic-filter, message-adapter]
+  Returns: `[topic-filter, message-adapter]`
   "
   (fn [_node-id _subscription typ] typ))
 
@@ -253,7 +264,7 @@
         (try (mqtt/disconnect client)
              (finally (reset! closed true)))))))
 
-(defn- new-mqtt-transport*
+(defn- make-mqtt-transport*
   "This is the internal implementation that expose the internal state for
   development."
   [node-id {:as mqtt-transport :keys [topic-prefix mqtt-config]}]
@@ -277,8 +288,11 @@
     {:transport (create-mqtt-xnfun-transport options)
      :state state}))
 
-(defn new-mqtt-transport [node-id {:as mqtt-transport :keys [topic-prefix mqtt-config]}]
-  (:transport (new-mqtt-transport* node-id mqtt-transport)))
+(defn make-mqtt-transport
+  "Create the mqtt transport for node `node-id` using the given transport
+  configuration `mqtt-transport`."
+  [node-id {:as mqtt-transport :keys [topic-prefix mqtt-config]}]
+  (:transport (make-mqtt-transport* node-id mqtt-transport)))
 
 (comment
 
@@ -289,7 +303,7 @@
   (do
     (defn n [v node-id]
       (when v (try (.close! (:transport v)) (catch Exception _)))
-      (new-mqtt-transport*
+      (make-mqtt-transport*
        node-id
        {:mqtt-config
         {:broker "tcp://127.0.0.1:1883"
