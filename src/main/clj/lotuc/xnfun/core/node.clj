@@ -552,7 +552,7 @@
         @(-> (swap!-swap-in-delayed!
               (node-promises node)
               {:ignores-nil? false :ks [req-id]}
-              #(or % (create-promise)))
+              #(if % @% (create-promise)))
              (get req-id))]
     r))
 
@@ -730,7 +730,7 @@
     @(-> (swap!-swap-in-delayed!
           (node-futures node)
           {:ignores-nil? false :ks [req-id]}
-          #(or % (submit-call* node fun-name params options)))
+          #(if % @% (submit-call* node fun-name params options)))
          (get req-id))))
 
 ;; RPC related data

@@ -59,11 +59,15 @@
     (if (and (nil? prev) ignores-nil?)
       prev
       (do
-        (when (and prev
-                   (instance? clojure.lang.IPending prev)
-                   (not (realized? prev)))
+        (when (and prev (delay? prev) (not (realized? prev)))
           (throw (ex-info "another computation running" {})))
-        (delay (apply f prev args))))))
+        (delay
+          (let [new (apply f prev args)]
+            (when (and (delay? new) (= new prev))
+              ;; If you want keep previous value, return (deref prev).
+              ;; Throw here in case of the misuse.
+              (throw "forbidden behavior, try return the deref value"))
+            new))))))
 
 (defn swap-vals!-swap-in-delayed!
   "Ensure the swap function is called only once by swapping in the delayed
