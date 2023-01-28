@@ -13,15 +13,44 @@
 <li><a href="lotuc.xnfun.core.transport-mqtt.html#var-create-send-data">create-send-data</a>: Convert our data to topic and payload to be sent.</li>
 <li><a href="lotuc.xnfun.core.transport-mqtt.html#var-create-sub-data">create-sub-data</a>:: Convert our subscription to topic filter and a message adapter. The message adapter adapts the received payload &amp; topic to the message sent and pass it to the handler function.</li>
 </ul>
+<p>Topics:</p>
+<ul>
+<li>Node heartbeat: <code>&lt;prefix&gt;/&lt;ver&gt;/registry/hb/&lt;node-id&gt;</code></li>
+<li>Request: <code>&lt;prefix&gt;/&lt;ver&gt;/rpc/req/&lt;callee-node-id&gt;/&lt;caller-node-id&gt;/&lt;request-id&gt;</code></li>
+<li>Response: <code>&lt;prefix&gt;/&lt;ver&gt;/rpc/resp/&lt;caller-node-id&gt;/&lt;request-id&gt;/&lt;callee-node-id&gt;</code></li>
+</ul>
+<p>The <code>&lt;ver&gt;</code> is now constantly <code>v0</code>. You can specify <code>&lt;prefix&gt;</code> when creating the transport with <code>make-mqtt-transport</code>.</p>
 </div></div><div class="public anchor" id="var-create-send-data"><h3>create-send-data</h3><h4 class="type">multimethod</h4><div class="usage"></div><div class="doc"><div class="markdown"><p>Convert the message to MQTT topic &amp; payload.</p>
 <p>Arguments: <code>[node-id, {:as msg :keys [typ data}]</code></p>
 <p>Returns: <code>[topic, payload]</code></p>
-</div></div><div class="src-link"><a href="https://github.com/lotuc/xnfun/blob/master/src/main/clj/lotuc/xnfun/core/transport_mqtt.clj#L133">view source</a></div></div><div class="public anchor" id="var-create-sub-data"><h3>create-sub-data</h3><h4 class="type">multimethod</h4><div class="usage"></div><div class="doc"><div class="markdown"><p>Create a topic filter and a message adapter for subscription.</p>
+</div></div><div class="src-link"><a href="https://github.com/lotuc/xnfun/blob/master/src/main/clj/lotuc/xnfun/core/transport_mqtt.clj#L143">view source</a></div></div><div class="public anchor" id="var-create-sub-data"><h3>create-sub-data</h3><h4 class="type">multimethod</h4><div class="usage"></div><div class="doc"><div class="markdown"><p>Create a topic filter and a message adapter for subscription.</p>
 <p>The message adapter convert the MQTT topic &amp; payload to the sent message for <code>handler-fn</code>’s usage.</p>
 <p>Arguments: <code>[node-id {:as subscription :keys [handle-fn]} typ]</code></p>
 <ul>
 <li><code>node</code>: current node</li>
 </ul>
 <p>Returns: <code>[topic-filter, message-adapter]</code></p>
-</div></div><div class="src-link"><a href="https://github.com/lotuc/xnfun/blob/master/src/main/clj/lotuc/xnfun/core/transport_mqtt.clj#L141">view source</a></div></div><div class="public anchor" id="var-make-mqtt-transport"><h3>make-mqtt-transport</h3><div class="usage"><code>(make-mqtt-transport node-id {:as mqtt-transport, :keys [topic-prefix mqtt-config]})</code></div><div class="doc"><div class="markdown"><p>Create the mqtt transport for node <code>node-id</code> using the given transport configuration <code>mqtt-transport</code>.</p>
-</div></div><div class="src-link"><a href="https://github.com/lotuc/xnfun/blob/master/src/main/clj/lotuc/xnfun/core/transport_mqtt.clj#L291">view source</a></div></div></div></body></html>
+</div></div><div class="src-link"><a href="https://github.com/lotuc/xnfun/blob/master/src/main/clj/lotuc/xnfun/core/transport_mqtt.clj#L151">view source</a></div></div><div class="public anchor" id="var-make-mqtt-transport"><h3>make-mqtt-transport</h3><div class="usage"><code>(make-mqtt-transport node-id {:as mqtt-transport, :keys [topic-prefix mqtt-config]})</code></div><div class="doc"><div class="markdown"><p>Create the mqtt transport for node <code>node-id</code> using the given transport configuration <code>mqtt-transport</code>.</p>
+<p>MQTT transport configuration <code>mqtt-trans-port</code> contains two parts:</p>
+<ul>
+<li><code>topic-prefix</code>: all message’s topics would be prefixed with it, consider it as a namespace.</li>
+<li><code>mqtt-config</code>: the mqtt connection configuration, it contains two part
+<ul>
+<li><code>:broker</code>: Connection uri, ex. <code>tcp://127.0.0.1:1883</code></li>
+<li><code>:client-id</code> (optional)</li>
+<li><code>:connect-options</code>: a map, all fields are optional:
+<ul>
+<li><code>:username</code> (string)</li>
+<li><code>:password</code> (string or char array)</li>
+<li><code>:auto-reconnect</code> (bool)</li>
+<li><code>:connection-timeout</code> (int)</li>
+<li><code>:clean-session</code> (bool)</li>
+<li><code>:keep-alive-interval</code> (int)</li>
+<li><code>:max-in-flight</code> (int)</li>
+<li><code>:will</code>: <code>{:keys [topic payload qos retain]}</code></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</div></div><div class="src-link"><a href="https://github.com/lotuc/xnfun/blob/master/src/main/clj/lotuc/xnfun/core/transport_mqtt.clj#L310">view source</a></div></div></div></body></html>
