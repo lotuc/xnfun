@@ -62,12 +62,6 @@ From the repl, we start two `xnfun` nodes and register some functions to each.
 
 ;; Register function "sub" to n1
 (add-function n1 "sub" (fn [[a b]] (- a b)))
-
-@(call n0 "add" [4 2])
-@(call n0 "sub" [4 2])
-
-@(call n1 "add" [4 2])
-@(call n1 "sub" [4 2])
 ```
 
 Since the node `n0` and `n1` are connected to the same MQTT transport, the tow
