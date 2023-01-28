@@ -419,7 +419,7 @@
 (defn add-function!
   "Register a supported function to current node.
 
-  With `overwrite` be false, we through if the same name already exists.
+  With `overwrite` being false, throw if the same name already exists.
   "
   [{:as node} fun-name fun &
    {:as opts :keys [overwrite]}]
