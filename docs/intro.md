@@ -7,7 +7,7 @@ states; and nodes are inter-connected through transports.
 Checkout the source code at [lotuc/xnfun](https://github.com/lotuc/xnfun) and
 view api documentation at [xnfun](https://lotuc.org/xnfun).
 
-Next we will go through two kinds of functions supported.
+We will go through two kinds of functions supported the rest of this article.
 
 - Unary RPC
 - Bidirectional RPC
@@ -64,8 +64,8 @@ From the repl, we start two `xnfun` nodes and register some functions to each.
 (add-function n1 "sub" (fn [[a b]] (- a b)))
 ```
 
-Since the node `n0` and `n1` are connected to the same MQTT transport, the tow
-nodes are actually inter-connected. You can call to each other.
+Since node `n0` and `n1` are connected to the same MQTT transport, the two nodes
+are actually inter-connected. You can call to each other.
 
 ```clojure
 @(call n0 "sub" [4 2])
@@ -93,7 +93,7 @@ for details.
   [arg {:keys [in-c out-c]
         {:as req-meta :keys [req-id hb-interval-ms]} :req-meta}]
   (let [p (promise)]
-    ;; Keep heartbeat.
+    ;; Keep the heartbeat.
     (future (loop []
               (put! out-c {:typ :xnfun/hb})
               (when (= :timeout (deref p hb-interval-ms :timeout))

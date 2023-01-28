@@ -19,7 +19,8 @@
                       :name "xnfun"
                       :themes [:default [:google-analytics]]
                       :source-uri "https://github.com/lotuc/xnfun/blob/master/{filepath}#L{line}"
-                      :doc-files ["docs/intro.md"]
+                      :doc-files ["docs/intro.md"
+                                  "docs/thoughts.md"]
                       :metadata {:doc/format :markdown}
                       :namespaces [lotuc.xnfun.api
                                    lotuc.xnfun.core.node
