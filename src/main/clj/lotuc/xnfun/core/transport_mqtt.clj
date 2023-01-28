@@ -6,12 +6,22 @@
   - [[create-send-data]]: Convert our data to topic and payload to be sent.
   - [[create-sub-data]]:: Convert our subscription to topic filter and a message
     adapter. The message adapter adapts the received payload & topic to the
-    message sent and pass it to the handler function."
+    message sent and pass it to the handler function.
+
+  Topics:
+
+  - Node heartbeat: `<prefix>/<ver>/registry/hb/<node-id>`
+  - Request: `<prefix>/<ver>/rpc/req/<callee-node-id>/<caller-node-id>/<request-id>`
+  - Response: `<prefix>/<ver>/rpc/resp/<caller-node-id>/<request-id>/<callee-node-id>`
+
+  The `<ver>` is now constantly `v0`. You can specify `<prefix>` when creating
+  the transport with `make-mqtt-transport`.
+  "
   (:require [lotuc.xnfun.core.transport :refer [XNFunTransport]]
-            [lotuc.xnfun.mqtt.client :as mqtt]
             [taoensso.nippy :as nippy]
             [clojure.tools.logging :as log]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [clojurewerkz.machine-head.client :as mh]))
 
 (def ^:dynamic ^:no-doc *ns-prefix* "")
 (def ^:private ver "v0")
@@ -32,8 +42,8 @@
   "Handle MQTT message with given handlers.
 
   The `get-handler` returns what we registered for a `topic-filter`."
-  [get-handlers topic raw-data]
-  (let [data (*from-mqtt-payload* (:payload raw-data))
+  [get-handlers topic _meta payload]
+  (let [data (*from-mqtt-payload* payload)
         futures
         (->> (get-handlers)
              (map (fn [[[_typ handle-fn] {:keys [message-adapter]}]]
@@ -95,7 +105,7 @@
                         [topic-filter (ms topic-filter)])))]
       (when-not (realized? sub-fn)
         (log/debugf "start listen on %s" topic-filter)
-        (mqtt/subscribe client topic-filter @sub-fn)))))
+        (mh/subscribe client {topic-filter 1} @sub-fn)))))
 
 (defn- remove-subscription*
   "Remove some subscriptions.
@@ -127,8 +137,8 @@
       (when (and (contains? old topic-filter) (not (contains? new topic-filter)))
         (let [{:keys [sub-fn]} (old topic-filter)]
           (when (and (realized? sub-fn)
-                     (mqtt/connected? client))
-            (mqtt/unsubscribe client topic-filter)))))))
+                     (mh/connected? client))
+            (mh/unsubscribe client topic-filter)))))))
 
 (defmulti create-send-data
   "Convert the message to MQTT topic & payload.
@@ -242,7 +252,7 @@
     (reify XNFunTransport
       (send-msg [_ {:as msg :keys [data]}]
         (let [[topic data] (create-send-data* msg)]
-          (mqtt/publish client topic (*to-mqtt-payload* data))))
+          (mh/publish client topic (*to-mqtt-payload* data))))
 
       (add-subscription [_ subscription]
         (try
@@ -261,7 +271,7 @@
         @closed)
 
       (close! [_]
-        (try (mqtt/disconnect client)
+        (try (mh/disconnect client)
              (finally (reset! closed true)))))))
 
 (defn- make-mqtt-transport*
@@ -270,8 +280,17 @@
   [node-id {:as mqtt-transport :keys [topic-prefix mqtt-config]}]
   (let [mqtt-topic-prefix (str/replace (or topic-prefix "") #"/+$" "")
 
+        client
+        (->> (cond-> {}
+               (:client-id mqtt-config)
+               (assoc :client-id (:client-id mqtt-config))
+
+               (:connect-options mqtt-config)
+               (assoc :opts (:connect-options mqtt-config)))
+             (mh/connect (:broker mqtt-config)))
+
         state
-        {:client (mqtt/make-client mqtt-config)
+        {:client client
          ;; topic to handler functions
          :subscriptions (atom {})
          ;; if the transport is closed
@@ -290,7 +309,25 @@
 
 (defn make-mqtt-transport
   "Create the mqtt transport for node `node-id` using the given transport
-  configuration `mqtt-transport`."
+  configuration `mqtt-transport`.
+
+  MQTT transport configuration `mqtt-trans-port` contains two parts:
+
+  - `topic-prefix`: all message's topics would be prefixed with it, consider it
+    as a namespace.
+  - `mqtt-config`: the mqtt connection configuration, it contains two part
+      - `:broker`: Connection uri, ex. `tcp://127.0.0.1:1883`
+      - `:client-id` (optional)
+      - `:connect-options`: a map, all fields are optional:
+          * `:username` (string)
+          * `:password` (string or char array)
+          * `:auto-reconnect` (bool)
+          * `:connection-timeout` (int)
+          * `:clean-session` (bool)
+          * `:keep-alive-interval` (int)
+          * `:max-in-flight` (int)
+          * `:will`: `{:keys [topic payload qos retain]}`
+  "
   [node-id {:as mqtt-transport :keys [topic-prefix mqtt-config]}]
   (:transport (make-mqtt-transport* node-id mqtt-transport)))
 
