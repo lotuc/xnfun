@@ -345,7 +345,7 @@
        {:mqtt-config
         {:broker "tcp://127.0.0.1:1883"
          :client-id node-id
-         :connect-options {:automatic-reconnect true}}}))
+         :connect-options {:auto-reconnect true}}}))
     (defonce l0 (atom nil))
     (defonce l1 (atom nil))
 

@@ -1,4 +1,35 @@
 (ns lotuc.xnfun.api
+  "Cross Node Function API.
+
+  Checkout [[lotuc.xnfun.core.node]] for the node abstraction.
+
+  **API summary**
+
+  - [[start-node]]
+  - [[stop-node]]
+  - [[add-function]]
+  - [[call-function]] [[call]]
+
+  **Example**
+
+  ```clojure
+  (def node-42 (start-node {:node-id \"node-42\"
+                            :transport
+                            {:xnfun/module 'xnfun.mqtt
+                             :mqtt-topic-prefix \"\"
+                             :mqtt-config
+                             {:broker \"tcp://127.0.0.1:1883\"
+                              :client-id \"node-42\"
+                              :connect-options {:max-in-flight 1000
+                                                :auto-reconnect true}}}}))
+
+  (add-function node-42 \"add\" (fn [[x y]] (+ x y)))
+
+  @(call node-42 \"add\" [20 22])
+
+  (stop-node node-42)
+  ```
+  "
   (:require [lotuc.xnfun.core.node :as n]))
 
 (declare stop-node)
@@ -7,6 +38,25 @@
   "Check [[lotuc.xnfun.core.node/make-node]] for `node-options`'s details.
 
   Returns the node to operate on.
+
+  - `node-options`
+      - `hb-options`:
+          - `:hb-interval-ms`: Heartbeat interval for this node.
+          - `:hb-lost-ratio`: Consider this node to be heartbeat lost in
+            (* hb-lost-ratio hb-interval-ms) when no heartbeat occurs.
+      - `:transport`: The transport this node would make to connect to other
+        nodes. Check transport configurations for details.
+
+  **Transport configurations**
+
+  ```clojure
+  {:xnfun/module 'xnfun.mqtt ;; we only support mqtt yet.
+   :mqtt-topic-prefix \"\"
+   :mqtt-config {}}
+  ```
+
+  Check [[lotuc.xnfun.core.transport-mqtt/make-mqtt-transport]] for
+  `mqtt-config`.
   "
   [{:as node :keys [node-id node-options]}]
   (let [r (n/make-node node)]

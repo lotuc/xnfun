@@ -105,7 +105,7 @@
        {:broker "tcp://127.0.0.1:1883"
         :client-id node-id
         :connect-options {:max-in-flight 1000
-                          :automatic-reconnect true}}}))
+                          :auto-reconnect true}}}))
 
 (defn- make-node-options
   "Options of the node.
@@ -157,6 +157,7 @@
   "Create a node.
 
   A node contains:
+
   - `:node-id`: The global identifier for given connection transport.
   - `:node-options`: The options specified for given node. Check [[make-node-options]]
      for details.
