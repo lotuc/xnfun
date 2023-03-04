@@ -17,11 +17,15 @@
   The `<ver>` is now constantly `v0`. You can specify `<prefix>` when creating
   the transport with `make-mqtt-transport`.
   "
-  (:require [lotuc.xnfun.core.transport :refer [XNFunTransport]]
-            [taoensso.nippy :as nippy]
-            [clojure.tools.logging :as log]
-            [clojure.string :as str]
-            [clojurewerkz.machine-head.client :as mh]))
+  (:require
+   [clojure.pprint :as pp]
+   [clojure.string :as str]
+   [clojure.tools.logging :as log]
+   [clojurewerkz.machine-head.client :as mh]
+   [lotuc.xnfun.protocols :refer [XNFunTransport]]
+   [taoensso.nippy :as nippy])
+  (:import
+   [java.io Writer]))
 
 (def ^:dynamic ^:no-doc *ns-prefix* "")
 (def ^:private ver "v0")
@@ -237,75 +241,46 @@
      (let [m (topic:resp:parse topic)]
        (with-meta {:typ :resp :data data} m)))])
 
-(defn- create-mqtt-xnfun-transport
-  [{:keys [client closed create-send-data* create-sub-data* subscriptions]}]
-  (let [subscription-to-type-handlers
-        (fn [{:as subscription :keys [types handle-fn]}]
-          (->> (set types)
-               (map (fn [typ]
-                      (let [[topic-filter message-adapter]
-                            (create-sub-data* subscription typ)]
-                        {:typ typ
-                         :topic-filter topic-filter
-                         :message-adapter message-adapter
-                         :handle-fn handle-fn})))))]
-    (reify XNFunTransport
-      (send-msg [_ {:as msg :keys [data]}]
-        (let [[topic data] (create-send-data* msg)]
-          (mh/publish client topic (*to-mqtt-payload* data))))
+(defrecord XNFunMQTTTransport
+           [node-id mqtt-config mqtt-topic-prefix
+            subscription-to-type-handlers
+            mqtt-client closed subscriptions]
+  XNFunTransport
+  (send-msg [_ {:as msg :keys [data]}]
+    (let [[topic data]
+          (binding [*ns-prefix* mqtt-topic-prefix]
+            (create-send-data node-id msg))]
+      (mh/publish mqtt-client topic (*to-mqtt-payload* data))))
 
-      (add-subscription [_ subscription]
-        (try
-          (-> (subscription-to-type-handlers subscription)
-              (add-subscription*  client subscriptions))
-          #(.remove-subscription _ subscription)
-          (catch Exception e
-            (.remove-subscription _ subscription)
-            (throw e))))
+  (add-subscription [_ subscription]
+    (try
+      (-> (subscription-to-type-handlers subscription)
+          (add-subscription*  mqtt-client subscriptions))
+      #(.remove-subscription _ subscription)
+      (catch Exception e
+        (.remove-subscription _ subscription)
+        (throw e))))
 
-      (remove-subscription [_ subscription]
-        (-> (subscription-to-type-handlers subscription)
-            (remove-subscription* client subscriptions)))
+  (remove-subscription [_ subscription]
+    (-> (subscription-to-type-handlers subscription)
+        (remove-subscription* mqtt-client subscriptions)))
 
-      (closed? [_]
-        @closed)
+  (closed? [_]
+    @closed)
 
-      (close! [_]
-        (try (mh/disconnect client)
-             (finally (reset! closed true)))))))
+  (close! [_]
+    (try (mh/disconnect mqtt-client)
+         (finally (reset! closed true)))))
 
-(defn- make-mqtt-transport*
-  "This is the internal implementation that expose the internal state for
-  development."
-  [node-id {:as mqtt-transport :keys [topic-prefix mqtt-config]}]
-  (let [mqtt-topic-prefix (str/replace (or topic-prefix "") #"/+$" "")
+(defmethod print-method XNFunMQTTTransport [it ^Writer w]
+  (->> (format "#<XNFunMQTTTransport %s %s %s>"
+               (:node-id it)
+               (get-in it [:mqtt-config :broker])
+               (get-in it [:mqtt-topic-prefix]))
+       (.write w)))
 
-        client
-        (->> (cond-> {}
-               (:client-id mqtt-config)
-               (assoc :client-id (:client-id mqtt-config))
-
-               (:connect-options mqtt-config)
-               (assoc :opts (:connect-options mqtt-config)))
-             (mh/connect (:broker mqtt-config)))
-
-        state
-        {:client client
-         ;; topic to handler functions
-         :subscriptions (atom {})
-         ;; if the transport is closed
-         :closed (atom false)}
-
-        options
-        (-> state
-            (assoc :create-send-data*
-                   #(binding [*ns-prefix* mqtt-topic-prefix]
-                      (create-send-data node-id %)))
-            (assoc :create-sub-data*
-                   #(binding [*ns-prefix* mqtt-topic-prefix]
-                      (create-sub-data node-id %1 %2))))]
-    {:transport (create-mqtt-xnfun-transport options)
-     :state state}))
+(defmethod pp/simple-dispatch XNFunMQTTTransport [it]
+  (print-method it *out*))
 
 (defn make-mqtt-transport
   "Create the mqtt transport for node `node-id` using the given transport
@@ -329,7 +304,42 @@
           * `:will`: `{:keys [topic payload qos retain]}`
   "
   [node-id {:as mqtt-transport :keys [topic-prefix mqtt-config]}]
-  (:transport (make-mqtt-transport* node-id mqtt-transport)))
+  (let [mqtt-topic-prefix
+        (str/replace (or topic-prefix "") #"/+$" "")
+
+        client
+        (->> (cond-> {}
+               (:client-id mqtt-config)
+               (assoc :client-id (:client-id mqtt-config))
+
+               (:connect-options mqtt-config)
+               (assoc :opts (:connect-options mqtt-config)))
+             (mh/connect (:broker mqtt-config)))
+
+        ;; topic to handler functions
+        subscriptions (atom {})
+         ;; if the transport is closed
+        closed (atom false)
+
+        subscription-to-type-handlers
+        (fn [{:as subscription :keys [types handle-fn]}]
+          (->> (set types)
+               (map (fn [typ]
+                      (let [[topic-filter message-adapter]
+                            (binding [*ns-prefix* mqtt-topic-prefix]
+                              (create-sub-data node-id subscription typ))]
+                        {:typ typ
+                         :topic-filter topic-filter
+                         :message-adapter message-adapter
+                         :handle-fn handle-fn})))))]
+    (map->XNFunMQTTTransport
+     {:node-id  node-id
+      :mqtt-config mqtt-config
+      :mqtt-topic-prefix mqtt-topic-prefix
+      :mqtt-client client
+      :closed closed
+      :subscriptions subscriptions
+      :subscription-to-type-handlers subscription-to-type-handlers})))
 
 (comment
 
@@ -339,32 +349,32 @@
   ;; Setup
   (do
     (defn n [v node-id]
-      (when v (try (.close! (:transport v)) (catch Exception _)))
-      (make-mqtt-transport*
+      (when v (try (.close! v) (catch Exception _)))
+      (make-mqtt-transport
        node-id
        {:mqtt-config
         {:broker "tcp://127.0.0.1:1883"
          :client-id node-id
          :connect-options {:auto-reconnect true}}}))
-    (defonce l0 (atom nil))
-    (defonce l1 (atom nil))
+    (def l0 (atom nil))
+    (def l1 (atom nil))
 
-    (defonce h (fn [name msg]
-                 (->> (format "\n  msg:%s\n  meta: %s" msg (meta msg))
-                      (println name "recv:"))))
+    (def h (fn [name msg]
+             (->> (format "\n  msg:%s\n  meta: %s" msg (meta msg))
+                  (println name "recv:"))))
 
-    (defonce sub0 (fn [s] (.add-subscription (:transport @l0) s)))
-    (defonce unsub0 (fn [s] (.remove-subscription (:transport @l0) s)))
-    (defonce pub0 (fn [m] (.send-msg (:transport @l0) m)))
+    (def sub0 (fn [s] (.add-subscription @l0 s)))
+    (def unsub0 (fn [s] (.remove-subscription @l0 s)))
+    (def pub0 (fn [m] (.send-msg @l0 m)))
 
-    (defonce sub1 (fn [s] (.add-subscription (:transport @l1) s)))
-    (defonce unsub1 (fn [s] (.remove-subscription (:transport @l1) s)))
-    (defonce pub1 (fn [m] (.send-msg (:transport @l1) m)))
+    (def sub1 (fn [s] (.add-subscription @l1 s)))
+    (def unsub1 (fn [s] (.remove-subscription @l1 s)))
+    (def pub1 (fn [m] (.send-msg @l1 m)))
 
-    (defonce restart!
+    (def restart!
       (fn [] (swap! l0 n "node-0") (swap! l1 n "node-1") 'ok))
-    (defonce cleanup
-      (fn [] (.close! (:transport @l0)) (.close! (:transport @l1)) 'ok)))
+    (def cleanup
+      (fn [] (.close! @l0) (.close! @l1) 'ok)))
 
   ;; Heartbeat
   (do
@@ -372,9 +382,7 @@
     (def s0 {:types [:hb] :handle-fn h0})
 
     (def u0 (sub0 s0))
-    (pub0 {:typ :hb :data "hello world!"})
-                                        ;
-    )
+    (pub0 {:typ :hb :data "hello world!"}))
   (unsub0 s0)
   (u0)
 
@@ -387,7 +395,7 @@
     (pub0 (with-meta
             {:typ :req :data "request message"}
             {:callee-node-id "node-0" :req-id "req-0"}))
-    ;; should recv this one (callee is not me)
+    ;; should not recv this one (callee is not me)
     (pub0 (with-meta
             {:typ :req :data "request message"}
             {:callee-node-id "node-1" :req-id "req-0"}))

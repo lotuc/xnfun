@@ -23,8 +23,8 @@
                                   "docs/thoughts.md"]
                       :metadata {:doc/format :markdown}
                       :namespaces [lotuc.xnfun.api
-                                   lotuc.xnfun.core.node
-                                   lotuc.xnfun.core.transport
+                                   lotuc.xnfun.protocols
+                                   lotuc.xnfun.core.node-defaults
                                    lotuc.xnfun.core.transport-mqtt]}}
   :dev  {:extra-paths ["src/dev/clj" "src/dev/resources" "src/test/clj"]}
   :nrepl {:extra-deps {nrepl/nrepl {:mvn/version "1.0.0"}}

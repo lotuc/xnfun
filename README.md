@@ -10,7 +10,7 @@
 All the samples assume a running MQTT broker at `tcp://localhost:1883` with no credentials.
 
 - [example1.clj](./src/dev/clj/examples/example1.clj): Unary RPC call
-- [example2.clj](./src/dev/clj/examples/example2.clj): Bindirectional RPC call
+- [example2.clj](./src/dev/clj/examples/example2.clj): Bidirectional RPC call
 
 ```clojure
 (require '[lotuc.xnfun.api :refer [start-node add-function call]])

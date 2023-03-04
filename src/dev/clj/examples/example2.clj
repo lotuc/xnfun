@@ -1,7 +1,8 @@
 (ns examples.example2
-  (:require [lotuc.xnfun.api :as xn]
-            [lotuc.xnfun.sample.sample-funcs :as sample-funcs]
-            [clojure.core.async :refer [go-loop put! <!]]))
+  (:require
+   [clojure.core.async :refer [go-loop put! <!]]
+   [examples.sample-functions :as sample-funcs]
+   [lotuc.xnfun.api :as xn]))
 
 ;;; Start two nodes for demostration
 (def n0 (xn/start-node {}))

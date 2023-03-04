@@ -30,14 +30,16 @@
   (stop-node node-42)
   ```
   "
-  (:require [lotuc.xnfun.core.node :as n]))
+  (:require
+   [lotuc.xnfun.core.node-impl :as impl]
+   [lotuc.xnfun.protocols :as xnp]))
 
 (declare stop-node)
 
-(defn start-node
-  "Check [[lotuc.xnfun.core.node/make-node]] for `node-options`'s details.
+(defn make-node
+  "Create a xnfun node.
 
-  Returns the node to operate on.
+  Check [[lotuc.xnfun.core.node-defaults]] for `node-options` defaults.
 
   - `node-options`
       - `hb-options`:
@@ -59,25 +61,26 @@
   `mqtt-config`.
   "
   [{:as node :keys [node-id node-options]}]
-  (let [r (n/make-node node)]
+  (impl/make-node node))
+
+(defn start-node
+  "Create a node and start transports & remote node monitoring & call handling."
+  [{:as node :keys [node-id node-options]}]
+  (let [n (make-node node)]
     (try
-      (doto r
-        (n/start-node-transport!)
-        (n/start-heartbeat!)
-        (n/serve-remote-call!)
-        (n/start-heartbeat-listener!))
+      (doto n
+        xnp/start-remote!
+        xnp/start-serve-remote-call!)
       (catch Exception e
-        (stop-node r)
+        (stop-node n)
         (throw e)))))
 
 (defn stop-node
   "Stop the `node` started with [[start-node]]."
   [node]
   (doto node
-    (n/stop-heartbeat-listener!)
-    (n/stop-serve-remote-call!)
-    (n/stop-heartbeat!)
-    (n/stop-node-transport!)))
+    xnp/stop-serve-remote-call!
+    xnp/stop-remote!))
 
 (defn add-function
   "Register a function to given `node`.
@@ -105,8 +108,10 @@
       - `overwrite`: defaults to be `true`; if specified as `false` and the given
         name is already registered, the function will throw.
   "
-  [node fun-name fun & opt]
-  (n/add-function! node fun-name fun opt))
+  [node fun-name fun & opts]
+  (if opts
+    (xnp/add-function! node fun-name fun opts)
+    (xnp/add-function! node fun-name fun)))
 
 (defn call-function
   "Call the function through given node.
@@ -138,8 +143,10 @@
             part, and just reset the internal heartbeat check timer.
   "
   [node fun-name fun-params
-   & {:as options :keys [req-meta out-c]}]
-  (n/submit-remote-call! node fun-name fun-params options))
+   & {:as opts :keys [req-meta out-c]}]
+  (if opts
+    (xnp/submit-remote-call! node fun-name fun-params opts)
+    (xnp/submit-remote-call! node fun-name fun-params)))
 
 (defn call
   "This is a wrapper of [[call-function]] for the simplest use case.
